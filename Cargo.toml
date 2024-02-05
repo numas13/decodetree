@@ -1,0 +1,16 @@
+[package]
+name = "decodetree"
+description = "Decodetree parser and generator"
+version = "0.1.0"
+license = "LGPL-3.0-only"
+authors = ["Denis Drakhnia <numas13@gmail.com>"]
+edition = "2021"
+rust-version = "1.61"
+
+[features]
+default = ["gen"]
+gen = []
+
+[dependencies]
+nom = "7"
+nom_locate = "4"

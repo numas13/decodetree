@@ -892,12 +892,6 @@ fn stmt(s: Span) -> IResult<Stmt> {
     )(s)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Item<'a> {
-    Pattern(PatternDef<'a>),
-    Group(Group<'a>),
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct Errors<'a> {
     src: &'a str,
@@ -922,12 +916,26 @@ impl<'a> Errors<'a> {
     }
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct Data<'a> {
     pub fields: HashMap<&'a str, FieldDef<'a>>,
     pub args: HashMap<&'a str, ArgsDef<'a>>,
     pub formats: HashMap<&'a str, FormatDef<'a>>,
-    pub items: Vec<Item<'a>>,
+    pub root: Group<'a>,
+}
+
+impl Default for Data<'_> {
+    fn default() -> Self {
+        Self {
+            fields: Default::default(),
+            args: Default::default(),
+            formats: Default::default(),
+            root: Group {
+                overlap: false,
+                items: Default::default(),
+            },
+        }
+    }
 }
 
 impl<'a> Data<'a> {
@@ -1085,7 +1093,7 @@ impl<'a> Parser<'a> {
 
     fn add_pattern_def(&mut self, def: PatternDef<'a>) {
         self.check_pattern_def(&def);
-        self.tree.items.push(Item::Pattern(def));
+        self.tree.root.items.push(GroupItem::PatternDef(def));
     }
 
     fn check_group_patterns(&mut self, group: &Group<'a>) {
@@ -1099,7 +1107,7 @@ impl<'a> Parser<'a> {
 
     fn add_group(&mut self, group: Group<'a>) {
         self.check_group_patterns(&group);
-        self.tree.items.push(Item::Group(group));
+        self.tree.root.items.push(GroupItem::Group(Box::new(group)));
     }
 
     fn parse(&mut self) {

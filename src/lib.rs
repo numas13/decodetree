@@ -13,13 +13,15 @@ use std::collections::HashMap;
 use std::mem;
 use std::rc::Rc;
 
-pub trait Insn: Sized {
+pub trait Insn: Sized + Copy + Clone {
     fn width() -> u32;
     fn zero() -> Self;
     fn ones() -> Self;
     fn set_bit(&mut self, offset: u32);
-    fn and(&mut self, other: &Self);
-    fn or(&mut self, other: &Self);
+    fn bit_not(&self) -> Self;
+    fn bit_and(&self, other: &Self) -> Self;
+    fn bit_andn(&self, other: &Self) -> Self;
+    fn bit_or(&self, other: &Self) -> Self;
 }
 
 macro_rules! impl_insn {
@@ -41,12 +43,20 @@ macro_rules! impl_insn {
                 *self |= 1 << offset;
             }
 
-            fn and(&mut self, other: &Self) {
-                *self &= *other;
+            fn bit_not(&self) -> Self {
+                !*self
             }
 
-            fn or(&mut self, other: &Self) {
-                *self |= *other;
+            fn bit_and(&self, other: &Self) -> Self {
+                *self & *other
+            }
+
+            fn bit_andn(&self, other: &Self) -> Self {
+                *self & !*other
+            }
+
+            fn bit_or(&self, other: &Self) -> Self {
+                *self | *other
             }
         })+
     );
@@ -146,7 +156,7 @@ pub struct Pattern<T> {
     pub args: Vec<Value>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Group<T> {
     pub mask: T,
     pub opcode: T,
@@ -160,12 +170,28 @@ pub enum Item<T> {
     Group(Box<Group<T>>),
 }
 
+impl<T: Copy> Item<T> {
+    pub fn opcode(&self) -> T {
+        match self {
+            Self::Pattern(i) => i.opcode,
+            Self::Group(i) => i.opcode,
+        }
+    }
+
+    pub fn mask(&self) -> T {
+        match self {
+            Self::Pattern(i) => i.mask,
+            Self::Group(i) => i.mask,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DecodeTree<T> {
     pub fields: HashMap<String, Rc<Field>>,
     pub args: HashMap<String, Args>,
     pub formats: HashMap<String, Rc<Pattern<T>>>,
-    pub items: Vec<Item<T>>,
+    pub root: Group<T>,
 }
 
 impl<T> DecodeTree<T>
@@ -221,15 +247,15 @@ where
                 }
                 E::FormatRef(i) => {
                     let r = self.formats.get(&i.to_string()).unwrap().clone();
-                    fm.or(&r.mask);
-                    fo.or(&r.opcode);
+                    fm = fm.bit_or(&r.mask);
+                    fo = fo.bit_or(&r.opcode);
                     sets.extend(r.sets.iter().cloned());
                     args.extend_from_slice(&r.args);
                 }
             }
         }
-        m.or(&fm);
-        o.or(&fo);
+        m = m.bit_or(&fm);
+        o = o.bit_or(&fo);
 
         for set in &mut sets {
             for arg in set.items.iter_mut() {
@@ -262,21 +288,21 @@ where
             let e = match i {
                 E::PatternDef(def) => {
                     let p = self.pattern_def(def);
-                    mask.and(&p.mask);
-                    opcode.or(&p.opcode);
+                    mask = mask.bit_and(&p.mask);
+                    opcode = opcode.bit_or(&p.opcode);
                     Item::Pattern(p)
                 }
                 E::Group(group) => {
                     let g = self.group(group);
-                    mask.and(&g.mask);
-                    opcode.or(&g.opcode);
+                    mask = mask.bit_and(&g.mask);
+                    opcode = opcode.bit_or(&g.opcode);
                     Item::Group(Box::new(g))
                 }
             };
             items.push(e);
         }
 
-        opcode.and(&mask);
+        opcode = opcode.bit_and(&mask);
 
         Group {
             mask,
@@ -383,15 +409,15 @@ where
             );
         }
 
-        for i in data.items.iter() {
+        for i in data.root.items.iter() {
             match i {
-                parser::Item::Pattern(def) => {
+                parser::GroupItem::PatternDef(def) => {
                     let pattern = self.pattern_def(def);
-                    self.items.push(Item::Pattern(pattern));
+                    self.root.items.push(Item::Pattern(pattern));
                 }
-                parser::Item::Group(def) => {
+                parser::GroupItem::Group(def) => {
                     let group = self.group(def);
-                    self.items.push(Item::Group(Box::new(group)));
+                    self.root.items.push(Item::Group(Box::new(group)));
                 }
             }
         }

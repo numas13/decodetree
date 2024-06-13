@@ -8,6 +8,25 @@ use std::{
 
 use crate::{DecodeTree, Field, FieldItem, Group, Insn, Item, Pattern, ValueKind};
 
+#[derive(Copy, Clone)]
+struct Pad(usize);
+
+impl Pad {
+    fn shift(self) -> Self {
+        Self(self.0 + 4)
+    }
+
+    fn shift2(self) -> Self {
+        Self(self.0 + 8)
+    }
+}
+
+impl fmt::Display for Pad {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "{1:0$}", self.0, ' ')
+    }
+}
+
 pub struct GeneratorBuilder {
     trait_name: String,
     type_name: Option<String>,
@@ -90,6 +109,7 @@ where
     fn gen_trans_proto_pattern<W: Write>(
         &self,
         out: &mut W,
+        pad: Pad,
         pattern: &'a Pattern<T>,
         set: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
@@ -98,7 +118,7 @@ where
         }
 
         set.insert(&pattern.name);
-        write!(out, "\tfn trans_{}(&mut self", pattern.name)?;
+        write!(out, "{pad}fn trans_{}(&mut self", pattern.name)?;
         for i in &pattern.sets {
             write!(out, ", {0}: &args_{0}", i.name)?;
         }
@@ -119,11 +139,12 @@ where
     fn gen_trans_proto_group<W: Write>(
         &self,
         out: &mut W,
+        pad: Pad,
         group: &'a Group<T>,
         set: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
         for i in &group.items {
-            self.gen_trans_proto_item(out, i, set)?;
+            self.gen_trans_proto_item(out, pad, i, set)?;
         }
         Ok(())
     }
@@ -131,29 +152,28 @@ where
     fn gen_trans_proto_item<W: Write>(
         &self,
         out: &mut W,
+        pad: Pad,
         item: &'a Item<T>,
         set: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
-        match item {
-            Item::Pattern(ref p) => {
-                self.gen_trans_proto_pattern(out, p, set)?;
+        match &item {
+            Item::Pattern(p) => {
+                self.gen_trans_proto_pattern(out, pad, p, set)?;
             }
-            Item::Group(ref g) => {
-                self.gen_trans_proto_group(out, g, set)?;
+            Item::Group(g) => {
+                self.gen_trans_proto_group(out, pad, g, set)?;
             }
         }
         Ok(())
     }
 
-    fn gen_trans_proto<W: Write>(&self, out: &mut W) -> io::Result<()> {
+    fn gen_trans_proto<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         let mut set = HashSet::new();
-        for i in &self.tree.items {
-            self.gen_trans_proto_item(out, i, &mut set)?;
-        }
+        self.gen_trans_proto_group(out, pad, &self.tree.root, &mut set)?;
         writeln!(out)
     }
 
-    fn gen_args<W: Write>(&self, out: &mut W) -> io::Result<()> {
+    fn gen_args<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         for args in self.tree.args.values().filter(|i| !i.is_extern) {
             writeln!(out, "#[allow(non_camel_case_types)]")?;
             if args.items.is_empty() {
@@ -162,7 +182,7 @@ where
                 writeln!(out, "pub struct args_{} {{", args.name)?;
                 for i in &args.items {
                     let ty = i.ty.as_deref().unwrap_or("isize");
-                    writeln!(out, "\tpub {}: {ty},", i.name)?;
+                    writeln!(out, "{pad}pub {}: {ty},", i.name)?;
                 }
                 writeln!(out, "}}")?;
             }
@@ -171,12 +191,12 @@ where
         Ok(())
     }
 
-    fn gen_user_func_proto<W: Write>(&self, out: &mut W) -> io::Result<()> {
+    fn gen_user_func_proto<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         let mut set = HashSet::new();
         for i in self.tree.fields.values().filter_map(|i| i.func.as_deref()) {
             if !set.contains(i) {
                 set.insert(i);
-                write!(out, "\tfn {i}(&mut self, value: isize) -> isize")?;
+                write!(out, "{pad}fn {i}(&mut self, value: isize) -> isize")?;
                 if self.stubs {
                     writeln!(out, " {{ todo!(\"{i}\") }}")?;
                 } else {
@@ -187,7 +207,7 @@ where
         writeln!(out)
     }
 
-    fn gen_extract_filed<W: Write>(&self, out: &mut W, field: &Field, pad: &str) -> io::Result<()> {
+    fn gen_extract_filed<W: Write>(&self, out: &mut W, field: &Field, pad: Pad) -> io::Result<()> {
         if field.items.len() == 1 {
             let f = &field.items[0];
             write!(out, "{pad}")?;
@@ -241,31 +261,36 @@ where
         Ok(())
     }
 
-    fn gen_extract_fields<W: Write>(&self, out: &mut W) -> io::Result<()> {
+    fn gen_extract_fields<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         for field in self.tree.fields.values() {
             writeln!(
                 out,
-                "\tfn extract_{}(&mut self, insn: {}) -> isize {{",
+                "{pad}fn extract_{}(&mut self, insn: {}) -> isize {{",
                 field.name, self.type_name
             )?;
-            self.gen_extract_filed(out, field, "\t\t")?;
-            writeln!(out, "\t}}",)?;
+            self.gen_extract_filed(out, field, pad.shift())?;
+            writeln!(out, "{pad}}}",)?;
             writeln!(out)?;
         }
         Ok(())
     }
 
-    fn gen_trans_call<W: Write>(&self, out: &mut W, i: &Pattern<T>, pad: &str) -> io::Result<()> {
+    fn gen_call_trans_func<W: Write>(
+        &self,
+        out: &mut W,
+        i: &Pattern<T>,
+        pad: Pad,
+    ) -> io::Result<()> {
         for set in &i.sets {
             writeln!(out, "{pad}let {0} = args_{0} {{", set.name)?;
             for arg in &set.items {
-                write!(out, "{pad}\t{}: ", arg.name)?;
+                write!(out, "{}{}: ", pad.shift(), arg.name)?;
                 match arg.value.as_ref().unwrap() {
                     ValueKind::Field(f) => {
                         if f.name.is_empty() {
                             writeln!(out, "{{")?;
-                            self.gen_extract_filed(out, f, &format!("{pad}\t\t"))?;
-                            write!(out, "{pad}\t}}")?;
+                            self.gen_extract_filed(out, f, pad.shift2())?;
+                            write!(out, "{}}}", pad.shift())?;
                         } else {
                             write!(out, "self.extract_{}(insn)", f.name)?;
                         }
@@ -287,7 +312,7 @@ where
                 ValueKind::Field(ref f) => {
                     if f.name.is_empty() {
                         writeln!(out, "{{")?;
-                        self.gen_extract_filed(out, f, &format!("{pad}\t"))?;
+                        self.gen_extract_filed(out, f, pad.shift())?;
                         write!(out, "{pad}}}")?;
                     } else {
                         write!(out, "self.extract_{}(insn)", f.name)?;
@@ -310,97 +335,163 @@ where
         Ok(())
     }
 
+    fn gen_decode_group_items<W: Write>(
+        &self,
+        out: &mut W,
+        items: Vec<&Item<T>>,
+        pad: Pad,
+        prev: T,
+    ) -> io::Result<()> {
+        let root_mask = items
+            .iter()
+            .fold(T::ones(), |mask, i| mask.bit_and(&i.mask()))
+            .bit_andn(&prev);
+        let next_mask = prev.bit_or(&root_mask);
+
+        let map = {
+            let mut map = HashMap::<_, Vec<_>>::new();
+            for i in items {
+                map.entry(i.opcode().bit_and(&root_mask))
+                    .or_default()
+                    .push(i);
+            }
+            map
+        };
+
+        writeln!(
+            out,
+            "{pad}match insn & {root_mask:#x} {{ // non-overlap group"
+        )?;
+
+        let mut map: Vec<_> = map.into_iter().collect();
+        map.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())));
+
+        for (opcode, items) in map {
+            let pad = pad.shift();
+
+            let mask = items[0].mask();
+            if !items.iter().all(|i| mask == i.mask()) {
+                writeln!(out, "{pad}{:#x} => {{", opcode)?;
+                self.gen_decode_group_items(out, items, pad.shift(), next_mask)?;
+            } else {
+                let mut pad = pad;
+                write!(out, "{pad}{:#x} ", opcode)?;
+
+                let m = mask.bit_andn(&next_mask);
+                if items.len() > 1 {
+                    writeln!(out, "=> {{")?;
+                    pad = pad.shift();
+                    writeln!(out, "{pad}match insn & {m:#x} {{")?;
+                } else {
+                    if m != T::zero() {
+                        let o = items[0].opcode().bit_andn(&next_mask);
+                        write!(out, "if insn & {m:#x} == {o:#x} ")?;
+                    }
+                    writeln!(out, "=> {{")?;
+                }
+
+                for i in &items {
+                    let pad = if items.len() > 1 { pad.shift() } else { pad };
+                    if let Item::Pattern(i) = i {
+                        let pad = if items.len() > 1 { pad } else { pad.shift() };
+                        writeln!(out, "{pad}// {:#x}:{:#x}", i.mask, i.opcode)?;
+                    }
+                    if items.len() > 1 {
+                        writeln!(out, "{pad}{:#x} => {{", i.opcode().bit_and(&m))?;
+                    }
+                    match i {
+                        Item::Pattern(i) => {
+                            self.gen_call_trans_func(out, i, pad.shift())?;
+                        }
+                        Item::Group(i) => {
+                            self.gen_decode_group(out, i, pad.shift(), m.bit_or(&next_mask))?;
+                        }
+                    }
+
+                    if items.len() > 1 {
+                        writeln!(out, "{pad}}}")?;
+                    }
+                }
+
+                if items.len() > 1 {
+                    writeln!(out, "{}_ => {{}}", pad.shift())?;
+                    writeln!(out, "{pad}}}")?;
+                }
+            }
+            writeln!(out, "{pad}}}")?;
+        }
+
+        writeln!(out, "{}_ => {{}}", pad.shift())?;
+        writeln!(out, "{pad}}} // match insn & {root_mask:#x}")?;
+
+        Ok(())
+    }
+
     fn gen_decode_group<W: Write>(
         &self,
         out: &mut W,
         group: &Group<T>,
-        pad: &str,
+        pad: Pad,
+        prev: T,
     ) -> io::Result<()> {
-        for i in &group.items {
-            match i {
-                Item::Pattern(p) => {
-                    if p.mask == T::ones() {
-                        writeln!(out, "{pad}if insn == {:#x} {{", p.opcode)?;
-                    } else {
-                        writeln!(out, "{pad}if insn & {:#x} == {:#x} {{", p.mask, p.opcode)?;
-                    }
-                    self.gen_trans_call(out, p, &format!("{pad}\t"))?;
-                    writeln!(out, "{pad}}}")?;
-                }
-                Item::Group(g) => {
-                    self.gen_decode_group(out, g, pad)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn gen_decode_patterns<W: Write>(&self, out: &mut W) -> io::Result<()> {
-        let mut map = HashMap::<_, Vec<_>>::new();
-
-        for i in &self.tree.items {
-            let mask = match i {
-                Item::Pattern(p) => &p.mask,
-                Item::Group(g) => &g.mask,
-            };
-            map.entry(mask).or_default().push(i);
-        }
-
-        let mut map: Vec<_> = map.into_iter().collect();
-        map.sort_by(|a, b| a.0.cmp(b.0).then(a.1.len().cmp(&b.1.len())));
-
-        for (mask, patterns) in map {
-            if mask == &T::ones() {
-                writeln!(out, "\t\tmatch insn {{")?;
-            } else {
-                writeln!(out, "\t\tmatch insn & {:#x} {{", mask)?;
-            }
-            for i in patterns {
+        if group.overlap {
+            writeln!(out, "{pad}// overlap group",)?;
+            for i in &group.items {
                 match i {
-                    Item::Pattern(p) => {
-                        writeln!(out, "\t\t\t{:#x} => {{", p.opcode)?;
-                        self.gen_trans_call(out, p, "\t\t\t\t")?;
-                        writeln!(out, "\t\t\t}}")?;
+                    Item::Pattern(i) => {
+                        writeln!(out, "{pad}// {:#x}:{:#x}", i.mask, i.opcode)?;
+                        let m = i.mask.bit_andn(&prev);
+                        let p = if m != T::zero() {
+                            let o = i.opcode.bit_andn(&prev);
+                            writeln!(out, "{pad}if insn & {m:#x} == {o:#x} {{ ")?;
+                            pad.shift()
+                        } else {
+                            pad
+                        };
+                        self.gen_call_trans_func(out, i, p)?;
+                        if m != T::zero() {
+                            writeln!(out, "{pad}}}")?;
+                        }
                     }
-                    Item::Group(g) => {
-                        writeln!(out, "\t\t\t{:#x} => {{", g.opcode)?;
-                        self.gen_decode_group(out, g, "\t\t\t\t")?;
-                        writeln!(out, "\t\t\t}}")?;
+                    Item::Group(i) => {
+                        self.gen_decode_group(out, i, pad, prev)?;
                     }
                 }
             }
-            writeln!(out, "\t\t\t_ => {{}}")?;
-            writeln!(out, "\t\t}}")?;
-            writeln!(out)?;
+            return Ok(());
         }
 
-        Ok(())
+        let items = group.items.iter().collect();
+        self.gen_decode_group_items(out, items, pad, prev)
     }
 
-    fn gen_decode<W: Write>(&self, out: &mut W) -> io::Result<()> {
+    fn gen_decode<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
+        writeln!(out, "{pad}#[inline(never)]")?;
         writeln!(
             out,
-            "\tfn decode(&mut self, insn: {}) -> bool {{",
+            "{pad}fn decode(&mut self, insn: {}) -> bool {{",
             self.type_name
         )?;
-        self.gen_decode_patterns(out)?;
-        writeln!(out, "\t\tfalse")?;
-        writeln!(out, "\t}}")
+        self.gen_decode_group(out, &self.tree.root, pad.shift(), T::zero())?;
+        writeln!(out)?;
+        writeln!(out, "{}false", pad.shift())?;
+        writeln!(out, "{pad}}}")
     }
 
     pub fn gen<W: Write>(&self, mut out: W) -> io::Result<()> {
-        self.gen_args(&mut out)?;
+        let pad = Pad(0);
+        self.gen_args(&mut out, pad)?;
         writeln!(out, "#[allow(clippy::collapsible_if)]")?;
         writeln!(out, "#[allow(clippy::single_match)]")?;
         if self.stubs {
             writeln!(out, "#[allow(unused_variables)]")?;
         }
-        writeln!(out, "pub trait {} {{", self.trait_name)?;
-        self.gen_user_func_proto(&mut out)?;
-        self.gen_extract_fields(&mut out)?;
-        self.gen_trans_proto(&mut out)?;
-        self.gen_decode(&mut out)?;
-        writeln!(out, "}}")?;
+        writeln!(out, "{pad}pub trait {} {{", self.trait_name)?;
+        self.gen_user_func_proto(&mut out, pad.shift())?;
+        self.gen_extract_fields(&mut out, pad.shift())?;
+        self.gen_trans_proto(&mut out, pad.shift())?;
+        self.gen_decode(&mut out, pad.shift())?;
+        writeln!(out, "{pad}}}")?;
         Ok(())
     }
 }

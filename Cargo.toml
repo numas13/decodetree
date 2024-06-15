@@ -17,10 +17,11 @@ gen = []
 nom = "7"
 nom_locate = "4"
 
-[dev-dependencies]
-tests-gen = { path = "tests/gen" }
-
 [workspace]
 members = [
+    "tests/gen",
+]
+default-members = [
+    ".",
     "tests/gen",
 ]

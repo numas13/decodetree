@@ -3,10 +3,11 @@ name = "decodetree"
 description = "Decodetree parser and generator"
 version = "0.1.0"
 license = "LGPL-3.0-only"
+keywords = ["disassembler", "decodetree"]
 authors = ["Denis Drakhnia <numas13@gmail.com>"]
+repository = "https://github.com/numas13/decodetree"
 edition = "2021"
 rust-version = "1.61"
-# TODO: add test/gen/** to package file
 
 [features]
 default = ["gen"]

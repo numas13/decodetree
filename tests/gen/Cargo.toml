@@ -1,6 +1,10 @@
 [package]
 name = "tests-gen"
+description = "Decodetree generator tests"
 version = "0.1.0"
+license = "LGPL-3.0-only"
+authors = ["Denis Drakhnia <numas13@gmail.com>"]
+repository = "https://github.com/numas13/decodetree"
 edition = "2021"
 
 [build-dependencies]

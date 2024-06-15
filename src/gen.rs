@@ -3,45 +3,78 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     hash::Hash,
-    io::{self, Write},
+    io::{self, Cursor, Write},
 };
 
 use crate::{DecodeTree, Field, FieldItem, Group, Insn, Item, Pattern, ValueKind};
 
 #[derive(Copy, Clone)]
-struct Pad(usize);
+pub struct Pad(usize);
 
 impl Pad {
-    fn shift(self) -> Self {
+    pub fn shift(self) -> Self {
         Self(self.0 + 4)
     }
 
-    fn shift2(self) -> Self {
+    pub fn shift2(self) -> Self {
         Self(self.0 + 8)
     }
 }
 
 impl fmt::Display for Pad {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "{1:0$}", self.0, ' ')
+        if self.0 != 0 {
+            write!(fmt, "{1:0$}", self.0, ' ')
+        } else {
+            Ok(())
+        }
     }
 }
 
-pub struct GeneratorBuilder {
+pub trait Visitor<T> {
+    #[allow(unused_variables)]
+    #[inline]
+    fn visit_trans_proto_pattern<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        pattern: &Pattern<T>,
+    ) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    #[allow(unused_variables)]
+    #[inline]
+    fn visit_trait_body<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+        Ok(())
+    }
+
+    #[allow(unused_variables)]
+    #[inline]
+    fn visit_end<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<T> Visitor<T> for () {}
+
+pub struct GeneratorBuilder<V = ()> {
     trait_name: String,
     type_name: Option<String>,
     zextract: String,
     sextract: String,
     stubs: bool,
+    opcodes: bool,
+    visitor: Option<V>,
 }
 
-impl Default for GeneratorBuilder {
+impl<V> Default for GeneratorBuilder<V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl GeneratorBuilder {
+impl<V> GeneratorBuilder<V> {
     pub fn new() -> Self {
         Self {
             trait_name: String::from("Decode"),
@@ -49,6 +82,8 @@ impl GeneratorBuilder {
             zextract: String::from("zextract"),
             sextract: String::from("sextract"),
             stubs: false,
+            opcodes: false,
+            visitor: None,
         }
     }
 
@@ -77,47 +112,62 @@ impl GeneratorBuilder {
         self
     }
 
-    pub fn build<T: Insn>(self, tree: &DecodeTree<T>) -> Generator<T> {
+    pub fn opcodes(mut self, opcodes: bool) -> Self {
+        self.opcodes = opcodes;
+        self
+    }
+
+    pub fn visitor(mut self, visitor: V) -> Self {
+        self.visitor = Some(visitor);
+        self
+    }
+
+    pub fn build<T: Insn>(self, tree: &DecodeTree<T>) -> Generator<T, V> {
         Generator {
             trait_name: self.trait_name,
             type_name: self.type_name.unwrap_or_else(|| format!("u{}", T::width())),
             zextract: self.zextract,
             sextract: self.sextract,
             stubs: self.stubs,
+            opcodes: self.opcodes,
+            visitor: self.visitor,
             tree,
         }
     }
 }
 
-pub struct Generator<'a, T> {
+pub struct Generator<'a, T, V = ()> {
     trait_name: String,
     type_name: String,
     zextract: String,
     sextract: String,
     stubs: bool,
+    opcodes: bool,
+    visitor: Option<V>,
     tree: &'a DecodeTree<T>,
 }
 
-impl<'a, T> Generator<'a, T>
+impl<'a, T, V> Generator<'a, T, V>
 where
     T: fmt::LowerHex + Eq + Ord + Hash + Insn,
+    V: Visitor<T>,
 {
-    pub fn builder() -> GeneratorBuilder {
+    pub fn builder() -> GeneratorBuilder<V> {
         GeneratorBuilder::new()
     }
 
     fn gen_trans_proto_pattern<W: Write>(
-        &self,
+        &mut self,
         out: &mut W,
         pad: Pad,
         pattern: &'a Pattern<T>,
-        set: &mut HashSet<&'a str>,
+        opcodes: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
-        if set.contains(pattern.name.as_str()) {
+        if opcodes.contains(pattern.name.as_str()) {
             return Ok(());
         }
 
-        set.insert(&pattern.name);
+        opcodes.insert(&pattern.name);
         write!(out, "{pad}fn trans_{}(&mut self", pattern.name)?;
         for i in &pattern.sets {
             write!(out, ", {0}: &args_{0}", i.name)?;
@@ -129,62 +179,71 @@ where
                 ValueKind::Const(_) => write!(out, "i64")?,
             }
         }
-        if self.stubs {
-            writeln!(out, ") -> bool {{ todo!(\"trans_{}\") }}", pattern.name)
-        } else {
-            writeln!(out, ") -> bool;")
+        write!(out, ") -> bool")?;
+
+        if let Some(v) = self.visitor.as_mut() {
+            let mut buf = Vec::new();
+            if v.visit_trans_proto_pattern(&mut Cursor::new(&mut buf), pad.shift(), pattern)? {
+                writeln!(out, " {{")?;
+                write!(out, "{}", String::from_utf8(buf).unwrap())?;
+                writeln!(out, "{pad}}}")?;
+                writeln!(out)?;
+                return Ok(());
+            }
         }
+
+        if self.stubs {
+            writeln!(out, "{{ todo!(\"trans_{}\") }}", pattern.name)?;
+        } else {
+            writeln!(out, ";")?;
+        }
+
+        Ok(())
     }
 
     fn gen_trans_proto_group<W: Write>(
-        &self,
+        &mut self,
         out: &mut W,
         pad: Pad,
         group: &'a Group<T>,
-        set: &mut HashSet<&'a str>,
+        opcodes: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
         for i in &group.items {
-            self.gen_trans_proto_item(out, pad, i, set)?;
+            self.gen_trans_proto_item(out, pad, i, opcodes)?;
         }
         Ok(())
     }
 
     fn gen_trans_proto_item<W: Write>(
-        &self,
+        &mut self,
         out: &mut W,
         pad: Pad,
         item: &'a Item<T>,
-        set: &mut HashSet<&'a str>,
+        opcodes: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
         match &item {
             Item::Pattern(p) => {
-                self.gen_trans_proto_pattern(out, pad, p, set)?;
+                self.gen_trans_proto_pattern(out, pad, p, opcodes)?;
             }
             Item::Group(g) => {
-                self.gen_trans_proto_group(out, pad, g, set)?;
+                self.gen_trans_proto_group(out, pad, g, opcodes)?;
             }
         }
         Ok(())
     }
 
-    fn gen_trans_proto<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
-        let mut set = HashSet::new();
-        self.gen_trans_proto_group(out, pad, &self.tree.root, &mut set)?;
-        writeln!(out)
-    }
-
     fn gen_args<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         for args in self.tree.args.values().filter(|i| !i.is_extern) {
-            writeln!(out, "#[allow(non_camel_case_types)]")?;
+            writeln!(out, "{pad}#[allow(non_camel_case_types)]")?;
             if args.items.is_empty() {
-                writeln!(out, "pub struct args_{};", args.name)?;
+                writeln!(out, "{pad}pub struct args_{};", args.name)?;
             } else {
-                writeln!(out, "pub struct args_{} {{", args.name)?;
+                writeln!(out, "{pad}pub struct args_{} {{", args.name)?;
                 for i in &args.items {
                     let ty = i.ty.as_deref().unwrap_or("isize");
-                    writeln!(out, "{pad}pub {}: {ty},", i.name)?;
+                    writeln!(out, "{}pub {}: {ty},", pad.shift(), i.name)?;
                 }
-                writeln!(out, "}}")?;
+                writeln!(out, "{pad}}}")?;
             }
             writeln!(out)?;
         }
@@ -202,9 +261,10 @@ where
                 } else {
                     writeln!(out, ";")?;
                 }
+                writeln!(out)?;
             }
         }
-        writeln!(out)
+        Ok(())
     }
 
     fn gen_extract_filed<W: Write>(&self, out: &mut W, field: &Field, pad: Pad) -> io::Result<()> {
@@ -478,20 +538,64 @@ where
         writeln!(out, "{pad}}}")
     }
 
-    pub fn gen<W: Write>(&self, mut out: W) -> io::Result<()> {
-        let pad = Pad(0);
-        self.gen_args(&mut out, pad)?;
+    fn gen_trait<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        opcodes: &mut HashSet<&'a str>,
+    ) -> io::Result<()> {
         writeln!(out, "#[allow(clippy::collapsible_if)]")?;
         writeln!(out, "#[allow(clippy::single_match)]")?;
         if self.stubs {
             writeln!(out, "#[allow(unused_variables)]")?;
         }
-        writeln!(out, "{pad}pub trait {} {{", self.trait_name)?;
-        self.gen_user_func_proto(&mut out, pad.shift())?;
-        self.gen_extract_fields(&mut out, pad.shift())?;
-        self.gen_trans_proto(&mut out, pad.shift())?;
-        self.gen_decode(&mut out, pad.shift())?;
+        writeln!(out, "{pad}pub trait {}: Sized {{", self.trait_name)?;
+        self.gen_user_func_proto(out, pad.shift())?;
+        self.gen_extract_fields(out, pad.shift())?;
+        self.gen_trans_proto_group(out, pad.shift(), &self.tree.root, opcodes)?;
+        self.gen_decode(out, pad.shift())?;
+        if let Some(visitor) = self.visitor.as_mut() {
+            visitor.visit_trait_body(out, pad.shift())?;
+        }
         writeln!(out, "{pad}}}")?;
+        Ok(())
+    }
+
+    fn gen_opcodes<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        opcodes: &HashSet<&'a str>,
+    ) -> io::Result<()> {
+        if self.opcodes {
+            writeln!(out)?;
+            writeln!(out, "{pad}#[derive(Copy, Clone, Debug, PartialEq, Eq)]")?;
+            writeln!(out, "{pad}pub enum Opcode {{")?;
+            let mut opcodes: Vec<_> = opcodes.iter().collect();
+            opcodes.sort();
+            for i in opcodes {
+                writeln!(out, "{}{},", pad.shift(), i.to_uppercase())?;
+            }
+            writeln!(out, "{pad}}}")?;
+        }
+        Ok(())
+    }
+
+    pub fn gen<W: Write>(&mut self, mut out: W) -> io::Result<()> {
+        let pad = Pad(0);
+        let out = &mut out;
+
+        self.gen_args(out, pad)?;
+
+        let mut opcodes = HashSet::new();
+        self.gen_trait(out, pad, &mut opcodes)?;
+        self.gen_opcodes(out, pad, &opcodes)?;
+
+        if let Some(visitor) = self.visitor.as_mut() {
+            writeln!(out)?;
+            visitor.visit_end(out, pad)?;
+        }
+
         Ok(())
     }
 }

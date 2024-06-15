@@ -6,6 +6,7 @@ license = "LGPL-3.0-only"
 authors = ["Denis Drakhnia <numas13@gmail.com>"]
 edition = "2021"
 rust-version = "1.61"
+# TODO: add test/gen/** to package file
 
 [features]
 default = ["gen"]
@@ -14,3 +15,11 @@ gen = []
 [dependencies]
 nom = "7"
 nom_locate = "4"
+
+[dev-dependencies]
+tests-gen = { path = "tests/gen" }
+
+[workspace]
+members = [
+    "tests/gen",
+]

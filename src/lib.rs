@@ -1,7 +1,7 @@
 pub(crate) mod parser;
 
 #[cfg(feature = "gen")]
-mod gen;
+pub mod gen;
 
 pub use parser::ErrorPrinter;
 pub use parser::Errors;
@@ -14,6 +14,8 @@ use std::mem;
 use std::rc::Rc;
 
 pub trait Insn: Sized + Copy + Clone {
+    // TODO: zero_extract
+    // TODO: sign_extract
     fn width() -> u32;
     fn zero() -> Self;
     fn ones() -> Self;

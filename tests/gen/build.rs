@@ -5,34 +5,44 @@ use std::{
 };
 
 use decodetree::{
-    gen::{Generator, Pad, Visitor},
+    gen::{Gen, Generator, Pad},
     Pattern,
 };
 
 #[derive(Default)]
 struct Helper {}
 
-impl<T> Visitor<T> for Helper {
-    fn visit_trans_proto_pattern<W: Write>(
+impl<T> Gen<T> for Helper {
+    fn gen_trans_body<W: Write>(
         &mut self,
         out: &mut W,
         pad: Pad,
         pattern: &Pattern<T>,
     ) -> io::Result<bool> {
-        writeln!(
-            out,
-            "{pad}self.set_opcode(Opcode::{});",
-            pattern.name.to_uppercase()
-        )?;
-        writeln!(out, "{pad}true")?;
+        let p = pad.shift();
+        let opcode = pattern.name.to_uppercase();
+        writeln!(out, "{{")?;
+        writeln!(out, "{p}self.set_opcode(Opcode::{opcode});")?;
+        writeln!(out, "{p}true")?;
+        writeln!(out, "{pad}}}")?;
         Ok(true)
     }
 
-    #[allow(unused_variables)]
-    #[inline]
-    fn visit_trait_body<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+    fn gen_trait_body<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
         writeln!(out)?;
         writeln!(out, "{pad}fn set_opcode(&mut self, opcode: Opcode);")?;
+        Ok(())
+    }
+
+    fn gen_opcodes<W: Write>(&mut self, out: &mut W, pad: Pad, opcodes: &[&str]) -> io::Result<()> {
+        writeln!(out)?;
+        writeln!(out, "{pad}#[derive(Copy, Clone, Debug, PartialEq, Eq)]")?;
+        writeln!(out, "{pad}pub enum Opcode {{")?;
+        let p = pad.shift();
+        for i in opcodes {
+            writeln!(out, "{p}{},", i.to_uppercase())?;
+        }
+        writeln!(out, "{pad}}}")?;
         Ok(())
     }
 }
@@ -60,7 +70,6 @@ where
     Generator::<T, Helper>::builder()
         .trait_name(trait_name)
         .stubs(true)
-        .opcodes(true)
         .visitor(Helper::default())
         .build(&tree)
         .gen(&mut out)

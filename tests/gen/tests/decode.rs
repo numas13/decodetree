@@ -1,4 +1,4 @@
-use tests_gen::decode32::{Opcode, Decode};
+use tests_gen::decode32::{Decode, Opcode};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct Insn {

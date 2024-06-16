@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     hash::Hash,
-    io::{self, Cursor, Write},
+    io::{self, Write},
 };
 
 use crate::{DecodeTree, Field, FieldItem, Group, Insn, Item, Pattern, ValueKind};
@@ -31,10 +31,13 @@ impl fmt::Display for Pad {
     }
 }
 
-pub trait Visitor<T> {
-    #[allow(unused_variables)]
-    #[inline]
-    fn visit_trans_proto_pattern<W: Write>(
+#[allow(unused_variables)]
+pub trait Gen<T> {
+    fn additional_args(&self) -> &[(&str, &str)] {
+        &[]
+    }
+
+    fn gen_trans_body<W: Write>(
         &mut self,
         out: &mut W,
         pad: Pad,
@@ -43,20 +46,20 @@ pub trait Visitor<T> {
         Ok(false)
     }
 
-    #[allow(unused_variables)]
-    #[inline]
-    fn visit_trait_body<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+    fn gen_trait_body<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
         Ok(())
     }
 
-    #[allow(unused_variables)]
-    #[inline]
+    fn gen_opcodes<W: Write>(&mut self, out: &mut W, pad: Pad, opcodes: &[&str]) -> io::Result<()> {
+        Ok(())
+    }
+
     fn visit_end<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
         Ok(())
     }
 }
 
-impl<T> Visitor<T> for () {}
+impl<T> Gen<T> for () {}
 
 pub struct GeneratorBuilder<V = ()> {
     trait_name: String,
@@ -64,7 +67,6 @@ pub struct GeneratorBuilder<V = ()> {
     zextract: String,
     sextract: String,
     stubs: bool,
-    opcodes: bool,
     visitor: Option<V>,
 }
 
@@ -82,7 +84,6 @@ impl<V> GeneratorBuilder<V> {
             zextract: String::from("zextract"),
             sextract: String::from("sextract"),
             stubs: false,
-            opcodes: false,
             visitor: None,
         }
     }
@@ -112,11 +113,6 @@ impl<V> GeneratorBuilder<V> {
         self
     }
 
-    pub fn opcodes(mut self, opcodes: bool) -> Self {
-        self.opcodes = opcodes;
-        self
-    }
-
     pub fn visitor(mut self, visitor: V) -> Self {
         self.visitor = Some(visitor);
         self
@@ -129,7 +125,6 @@ impl<V> GeneratorBuilder<V> {
             zextract: self.zextract,
             sextract: self.sextract,
             stubs: self.stubs,
-            opcodes: self.opcodes,
             visitor: self.visitor,
             tree,
         }
@@ -142,7 +137,6 @@ pub struct Generator<'a, T, V = ()> {
     zextract: String,
     sextract: String,
     stubs: bool,
-    opcodes: bool,
     visitor: Option<V>,
     tree: &'a DecodeTree<T>,
 }
@@ -150,7 +144,7 @@ pub struct Generator<'a, T, V = ()> {
 impl<'a, T, V> Generator<'a, T, V>
 where
     T: fmt::LowerHex + Eq + Ord + Hash + Insn,
-    V: Visitor<T>,
+    V: Gen<T>,
 {
     pub fn builder() -> GeneratorBuilder<V> {
         GeneratorBuilder::new()
@@ -169,6 +163,11 @@ where
 
         opcodes.insert(&pattern.name);
         write!(out, "{pad}fn trans_{}(&mut self", pattern.name)?;
+        if let Some(visitor) = self.visitor.as_ref() {
+            for (name, ty) in visitor.additional_args() {
+                write!(out, ", {name}: {ty}")?;
+            }
+        }
         for i in &pattern.sets {
             write!(out, ", {0}: &args_{0}", i.name)?;
         }
@@ -182,11 +181,7 @@ where
         write!(out, ") -> bool")?;
 
         if let Some(v) = self.visitor.as_mut() {
-            let mut buf = Vec::new();
-            if v.visit_trans_proto_pattern(&mut Cursor::new(&mut buf), pad.shift(), pattern)? {
-                writeln!(out, " {{")?;
-                write!(out, "{}", String::from_utf8(buf).unwrap())?;
-                writeln!(out, "{pad}}}")?;
+            if v.gen_trans_body(out, pad.shift(), pattern)? {
                 writeln!(out)?;
                 return Ok(());
             }
@@ -385,6 +380,11 @@ where
             writeln!(out, ";")?;
         }
         write!(out, "{pad}if Self::trans_{}(self", i.name)?;
+        if let Some(visitor) = self.visitor.as_ref() {
+            for (name, _) in visitor.additional_args() {
+                write!(out, ", {name}")?;
+            }
+        }
         for set in &i.sets {
             write!(out, ", &{}", set.name)?;
         }
@@ -527,11 +527,13 @@ where
 
     fn gen_decode<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         writeln!(out, "{pad}#[inline(never)]")?;
-        writeln!(
-            out,
-            "{pad}fn decode(&mut self, insn: {}) -> bool {{",
-            self.type_name
-        )?;
+        write!(out, "{pad}fn decode(&mut self, insn: {}", self.type_name)?;
+        if let Some(visitor) = self.visitor.as_ref() {
+            for (name, ty) in visitor.additional_args() {
+                write!(out, ", {name}: {ty}")?;
+            }
+        }
+        writeln!(out, ") -> bool {{")?;
         self.gen_decode_group(out, &self.tree.root, pad.shift(), T::zero())?;
         writeln!(out)?;
         writeln!(out, "{}false", pad.shift())?;
@@ -555,7 +557,7 @@ where
         self.gen_trans_proto_group(out, pad.shift(), &self.tree.root, opcodes)?;
         self.gen_decode(out, pad.shift())?;
         if let Some(visitor) = self.visitor.as_mut() {
-            visitor.visit_trait_body(out, pad.shift())?;
+            visitor.gen_trait_body(out, pad.shift())?;
         }
         writeln!(out, "{pad}}}")?;
         Ok(())
@@ -567,16 +569,10 @@ where
         pad: Pad,
         opcodes: &HashSet<&'a str>,
     ) -> io::Result<()> {
-        if self.opcodes {
-            writeln!(out)?;
-            writeln!(out, "{pad}#[derive(Copy, Clone, Debug, PartialEq, Eq)]")?;
-            writeln!(out, "{pad}pub enum Opcode {{")?;
-            let mut opcodes: Vec<_> = opcodes.iter().collect();
+        if let Some(v) = self.visitor.as_mut() {
+            let mut opcodes: Vec<_> = opcodes.iter().copied().collect();
             opcodes.sort();
-            for i in opcodes {
-                writeln!(out, "{}{},", pad.shift(), i.to_uppercase())?;
-            }
-            writeln!(out, "{pad}}}")?;
+            v.gen_opcodes(out, pad, &opcodes)?;
         }
         Ok(())
     }

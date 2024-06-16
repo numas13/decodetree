@@ -271,6 +271,8 @@ where
             }
         }
 
+        // TODO: validate sets
+
         Pattern {
             mask: m,
             opcode: o,

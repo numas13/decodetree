@@ -9,11 +9,9 @@ pub use parser::Errors;
 #[cfg(feature = "gen")]
 pub use gen::Generator;
 
-use std::collections::HashMap;
-use std::mem;
-use std::rc::Rc;
+use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem, rc::Rc};
 
-pub trait Insn: Sized + Copy + Clone {
+pub trait Insn: Sized + Copy + Clone + Eq + Ord + Hash + LowerHex {
     // TODO: zero_extract
     // TODO: sign_extract
     fn width() -> u32;

@@ -1,8 +1,8 @@
 use std::{
+    borrow::Cow,
     cmp::Ord,
     collections::{HashMap, HashSet},
     fmt,
-    hash::Hash,
     io::{self, Write},
 };
 
@@ -33,6 +33,14 @@ impl fmt::Display for Pad {
 
 #[allow(unused_variables)]
 pub trait Gen<T> {
+    fn additional_cond(&self, pattern: &Pattern<T>) -> Option<Cow<'static, str>> {
+        None
+    }
+
+    fn pass_arg(&self, name: &str) -> bool {
+        true
+    }
+
     fn additional_args(&self) -> &[(&str, &str)] {
         &[]
     }
@@ -46,48 +54,56 @@ pub trait Gen<T> {
         Ok(false)
     }
 
+    fn gen_on_success<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        pattern: &Pattern<T>,
+    ) -> io::Result<()> {
+        Ok(())
+    }
+
     fn gen_trait_body<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
         Ok(())
     }
 
-    fn gen_opcodes<W: Write>(&mut self, out: &mut W, pad: Pad, opcodes: &[&str]) -> io::Result<()> {
+    fn gen_opcodes<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        opcodes: &HashSet<&str>,
+    ) -> io::Result<()> {
         Ok(())
     }
 
-    fn visit_end<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+    fn gen_end<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
         Ok(())
     }
 }
 
 impl<T> Gen<T> for () {}
 
-pub struct GeneratorBuilder<V = ()> {
+pub struct GeneratorBuilder {
     trait_name: String,
     type_name: Option<String>,
     zextract: String,
     sextract: String,
     stubs: bool,
-    visitor: Option<V>,
 }
 
-impl<V> Default for GeneratorBuilder<V> {
+impl Default for GeneratorBuilder {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<V> GeneratorBuilder<V> {
-    pub fn new() -> Self {
         Self {
             trait_name: String::from("Decode"),
             type_name: None,
             zextract: String::from("zextract"),
             sextract: String::from("sextract"),
             stubs: false,
-            visitor: None,
         }
     }
+}
 
+impl GeneratorBuilder {
     pub fn trait_name(mut self, s: &str) -> Self {
         self.trait_name = s.to_owned();
         self
@@ -113,41 +129,40 @@ impl<V> GeneratorBuilder<V> {
         self
     }
 
-    pub fn visitor(mut self, visitor: V) -> Self {
-        self.visitor = Some(visitor);
-        self
-    }
-
-    pub fn build<T: Insn>(self, tree: &DecodeTree<T>) -> Generator<T, V> {
+    pub fn build<T, G>(self, tree: &DecodeTree<T>, gen: G) -> Generator<T, G>
+    where
+        T: Insn,
+        G: Gen<T>,
+    {
         Generator {
             trait_name: self.trait_name,
             type_name: self.type_name.unwrap_or_else(|| format!("u{}", T::width())),
             zextract: self.zextract,
             sextract: self.sextract,
             stubs: self.stubs,
-            visitor: self.visitor,
+            gen,
             tree,
         }
     }
 }
 
-pub struct Generator<'a, T, V = ()> {
+pub struct Generator<'a, T, G = ()> {
     trait_name: String,
     type_name: String,
     zextract: String,
     sextract: String,
     stubs: bool,
-    visitor: Option<V>,
+    gen: G,
     tree: &'a DecodeTree<T>,
 }
 
-impl<'a, T, V> Generator<'a, T, V>
+impl<'a, T, G> Generator<'a, T, G>
 where
-    T: fmt::LowerHex + Eq + Ord + Hash + Insn,
-    V: Gen<T>,
+    T: Insn,
+    G: Gen<T>,
 {
-    pub fn builder() -> GeneratorBuilder<V> {
-        GeneratorBuilder::new()
+    pub fn builder() -> GeneratorBuilder {
+        GeneratorBuilder::default()
     }
 
     fn gen_trans_proto_pattern<W: Write>(
@@ -163,15 +178,13 @@ where
 
         opcodes.insert(&pattern.name);
         write!(out, "{pad}fn trans_{}(&mut self", pattern.name)?;
-        if let Some(visitor) = self.visitor.as_ref() {
-            for (name, ty) in visitor.additional_args() {
-                write!(out, ", {name}: {ty}")?;
-            }
+        for (name, ty) in self.gen.additional_args() {
+            write!(out, ", {name}: {ty}")?;
         }
         for i in &pattern.sets {
             write!(out, ", {0}: &args_{0}", i.name)?;
         }
-        for i in &pattern.args {
+        for i in pattern.args.iter().filter(|i| self.gen.pass_arg(&i.name)) {
             write!(out, ", {0}: ", i.name)?;
             match i.kind {
                 ValueKind::Field(_) => write!(out, "isize")?,
@@ -180,11 +193,9 @@ where
         }
         write!(out, ") -> bool")?;
 
-        if let Some(v) = self.visitor.as_mut() {
-            if v.gen_trans_body(out, pad.shift(), pattern)? {
-                writeln!(out)?;
-                return Ok(());
-            }
+        if self.gen.gen_trans_body(out, pad, pattern)? {
+            writeln!(out)?;
+            return Ok(());
         }
 
         if self.stubs {
@@ -330,12 +341,7 @@ where
         Ok(())
     }
 
-    fn gen_call_trans_func<W: Write>(
-        &self,
-        out: &mut W,
-        i: &Pattern<T>,
-        pad: Pad,
-    ) -> io::Result<()> {
+    fn gen_extract_sets<W: Write>(&self, out: &mut W, i: &Pattern<T>, pad: Pad) -> io::Result<()> {
         for set in &i.sets {
             writeln!(out, "{pad}let {0} = args_{0} {{", set.name)?;
             for arg in &set.items {
@@ -361,7 +367,11 @@ where
             }
             writeln!(out, "{pad}}};")?;
         }
-        for arg in &i.args {
+        Ok(())
+    }
+
+    fn gen_extract_args<W: Write>(&self, out: &mut W, i: &Pattern<T>, pad: Pad) -> io::Result<()> {
+        for arg in i.args.iter().filter(|i| self.gen.pass_arg(&i.name)) {
             write!(out, "{pad}let {} = ", arg.name)?;
             match arg.kind {
                 ValueKind::Field(ref f) => {
@@ -379,24 +389,36 @@ where
             }
             writeln!(out, ";")?;
         }
-        write!(out, "{pad}if Self::trans_{}(self", i.name)?;
-        if let Some(visitor) = self.visitor.as_ref() {
-            for (name, _) in visitor.additional_args() {
-                write!(out, ", {name}")?;
-            }
+        Ok(())
+    }
+
+    fn gen_call_trans_func<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        pattern: &Pattern<T>,
+    ) -> io::Result<()> {
+        self.gen_extract_sets(out, pattern, pad)?;
+        self.gen_extract_args(out, pattern, pad)?;
+        write!(out, "{pad}if Self::trans_{}(self", pattern.name)?;
+        for (name, _) in self.gen.additional_args() {
+            write!(out, ", {name}")?;
         }
-        for set in &i.sets {
+        for set in &pattern.sets {
             write!(out, ", &{}", set.name)?;
         }
-        for arg in &i.args {
+        for arg in pattern.args.iter().filter(|i| self.gen.pass_arg(&i.name)) {
             write!(out, ", {}", arg.name)?;
         }
-        writeln!(out, ") {{ return true }}")?;
+        writeln!(out, ") {{")?;
+        self.gen.gen_on_success(out, pad.shift(), pattern)?;
+        writeln!(out, "{}return true;", pad.shift())?;
+        writeln!(out, "{pad}}}")?;
         Ok(())
     }
 
     fn gen_decode_group_items<W: Write>(
-        &self,
+        &mut self,
         out: &mut W,
         items: Vec<&Item<T>>,
         pad: Pad,
@@ -438,45 +460,34 @@ where
                 write!(out, "{pad}{:#x} ", opcode)?;
 
                 let m = mask.bit_andn(&next_mask);
-                if items.len() > 1 {
-                    writeln!(out, "=> {{")?;
-                    pad = pad.shift();
-                    writeln!(out, "{pad}match insn & {m:#x} {{")?;
-                } else {
-                    if m != T::zero() {
-                        let o = items[0].opcode().bit_andn(&next_mask);
-                        write!(out, "if insn & {m:#x} == {o:#x} ")?;
-                    }
-                    writeln!(out, "=> {{")?;
-                }
+                writeln!(out, "=> {{")?;
+                pad = pad.shift();
+                writeln!(out, "{pad}match insn & {m:#x} {{")?;
 
                 for i in &items {
-                    let pad = if items.len() > 1 { pad.shift() } else { pad };
-                    if let Item::Pattern(i) = i {
-                        let pad = if items.len() > 1 { pad } else { pad.shift() };
-                        writeln!(out, "{pad}// {:#x}:{:#x}", i.mask, i.opcode)?;
-                    }
-                    if items.len() > 1 {
-                        writeln!(out, "{pad}{:#x} => {{", i.opcode().bit_and(&m))?;
-                    }
+                    let pad = pad.shift();
                     match i {
-                        Item::Pattern(i) => {
-                            self.gen_call_trans_func(out, i, pad.shift())?;
+                        Item::Pattern(pat) => {
+                            // TODO: comment file:line
+                            writeln!(out, "{pad}// {:#x}:{:#x}", pat.mask, pat.opcode)?;
+                            write!(out, "{pad}{:#x}", pat.opcode.bit_and(&m))?;
+                            if let Some(cond) = self.gen.additional_cond(pat) {
+                                write!(out, " if {cond}")?;
+                            }
+                            writeln!(out, " => {{")?;
+                            self.gen_call_trans_func(out, pad.shift(), pat)?;
+                            writeln!(out, "{pad}}}")?;
                         }
-                        Item::Group(i) => {
-                            self.gen_decode_group(out, i, pad.shift(), m.bit_or(&next_mask))?;
+                        Item::Group(group) => {
+                            writeln!(out, "{pad}{:#x} => {{", group.opcode.bit_and(&m))?;
+                            self.gen_decode_group(out, pad.shift(), group, m.bit_or(&next_mask))?;
+                            writeln!(out, "{pad}}}")?;
                         }
-                    }
-
-                    if items.len() > 1 {
-                        writeln!(out, "{pad}}}")?;
                     }
                 }
 
-                if items.len() > 1 {
-                    writeln!(out, "{}_ => {{}}", pad.shift())?;
-                    writeln!(out, "{pad}}}")?;
-                }
+                writeln!(out, "{}_ => {{}}", pad.shift())?;
+                writeln!(out, "{pad}}}")?;
             }
             writeln!(out, "{pad}}}")?;
         }
@@ -488,33 +499,30 @@ where
     }
 
     fn gen_decode_group<W: Write>(
-        &self,
+        &mut self,
         out: &mut W,
-        group: &Group<T>,
         pad: Pad,
+        group: &Group<T>,
         prev: T,
     ) -> io::Result<()> {
         if group.overlap {
             writeln!(out, "{pad}// overlap group",)?;
             for i in &group.items {
                 match i {
-                    Item::Pattern(i) => {
-                        writeln!(out, "{pad}// {:#x}:{:#x}", i.mask, i.opcode)?;
-                        let m = i.mask.bit_andn(&prev);
-                        let p = if m != T::zero() {
-                            let o = i.opcode.bit_andn(&prev);
-                            writeln!(out, "{pad}if insn & {m:#x} == {o:#x} {{ ")?;
-                            pad.shift()
-                        } else {
-                            pad
-                        };
-                        self.gen_call_trans_func(out, i, p)?;
-                        if m != T::zero() {
-                            writeln!(out, "{pad}}}")?;
+                    Item::Pattern(pat) => {
+                        writeln!(out, "{pad}// {:#x}:{:#x}", pat.mask, pat.opcode)?;
+                        let m = pat.mask.bit_andn(&prev);
+                        let o = pat.opcode.bit_andn(&prev);
+                        write!(out, "{pad}if")?;
+                        if let Some(cond) = self.gen.additional_cond(pat) {
+                            write!(out, " {cond} &&")?;
                         }
+                        writeln!(out, " insn & {m:#x} == {o:#x} {{ ")?;
+                        self.gen_call_trans_func(out, pad.shift(), pat)?;
+                        writeln!(out, "{pad}}}")?;
                     }
-                    Item::Group(i) => {
-                        self.gen_decode_group(out, i, pad, prev)?;
+                    Item::Group(group) => {
+                        self.gen_decode_group(out, pad, group, prev)?;
                     }
                 }
             }
@@ -525,16 +533,14 @@ where
         self.gen_decode_group_items(out, items, pad, prev)
     }
 
-    fn gen_decode<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
+    fn gen_decode<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
         writeln!(out, "{pad}#[inline(never)]")?;
         write!(out, "{pad}fn decode(&mut self, insn: {}", self.type_name)?;
-        if let Some(visitor) = self.visitor.as_ref() {
-            for (name, ty) in visitor.additional_args() {
-                write!(out, ", {name}: {ty}")?;
-            }
+        for (name, ty) in self.gen.additional_args() {
+            write!(out, ", {name}: {ty}")?;
         }
         writeln!(out, ") -> bool {{")?;
-        self.gen_decode_group(out, &self.tree.root, pad.shift(), T::zero())?;
+        self.gen_decode_group(out, pad.shift(), &self.tree.root, T::zero())?;
         writeln!(out)?;
         writeln!(out, "{}false", pad.shift())?;
         writeln!(out, "{pad}}}")
@@ -556,24 +562,8 @@ where
         self.gen_extract_fields(out, pad.shift())?;
         self.gen_trans_proto_group(out, pad.shift(), &self.tree.root, opcodes)?;
         self.gen_decode(out, pad.shift())?;
-        if let Some(visitor) = self.visitor.as_mut() {
-            visitor.gen_trait_body(out, pad.shift())?;
-        }
+        self.gen.gen_trait_body(out, pad.shift())?;
         writeln!(out, "{pad}}}")?;
-        Ok(())
-    }
-
-    fn gen_opcodes<W: Write>(
-        &mut self,
-        out: &mut W,
-        pad: Pad,
-        opcodes: &HashSet<&'a str>,
-    ) -> io::Result<()> {
-        if let Some(v) = self.visitor.as_mut() {
-            let mut opcodes: Vec<_> = opcodes.iter().copied().collect();
-            opcodes.sort();
-            v.gen_opcodes(out, pad, &opcodes)?;
-        }
         Ok(())
     }
 
@@ -585,12 +575,10 @@ where
 
         let mut opcodes = HashSet::new();
         self.gen_trait(out, pad, &mut opcodes)?;
-        self.gen_opcodes(out, pad, &opcodes)?;
+        self.gen.gen_opcodes(out, pad, &opcodes)?;
 
-        if let Some(visitor) = self.visitor.as_mut() {
-            writeln!(out)?;
-            visitor.visit_end(out, pad)?;
-        }
+        writeln!(out)?;
+        self.gen.gen_end(out, pad)?;
 
         Ok(())
     }

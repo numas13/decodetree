@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs::{self, File},
     io::{self, BufWriter, Write},
     path::Path,
@@ -34,7 +35,18 @@ impl<T> Gen<T> for Helper {
         Ok(())
     }
 
-    fn gen_opcodes<W: Write>(&mut self, out: &mut W, pad: Pad, opcodes: &[&str]) -> io::Result<()> {
+    fn gen_opcodes<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        opcodes: &HashSet<&str>,
+    ) -> io::Result<()> {
+        let opcodes = {
+            let mut vec: Vec<_> = opcodes.iter().collect();
+            vec.sort();
+            vec
+        };
+
         writeln!(out)?;
         writeln!(out, "{pad}#[derive(Copy, Clone, Debug, PartialEq, Eq)]")?;
         writeln!(out, "{pad}pub enum Opcode {{")?;
@@ -70,8 +82,7 @@ where
     Generator::<T, Helper>::builder()
         .trait_name(trait_name)
         .stubs(true)
-        .visitor(Helper::default())
-        .build(&tree)
+        .build(&tree, Helper::default())
         .gen(&mut out)
         .unwrap();
 }

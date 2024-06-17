@@ -6,6 +6,7 @@ license = "LGPL-3.0-only"
 authors = ["Denis Drakhnia <numas13@gmail.com>"]
 repository = "https://github.com/numas13/decodetree"
 edition = "2021"
+publish = false
 
 [build-dependencies]
 decodetree = { path = "../..", features = ["gen"] }

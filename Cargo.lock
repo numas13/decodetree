@@ -10,7 +10,7 @@ checksum = "e1e5f035d16fc623ae5f74981db80a439803888314e3a555fd6f04acd51a3205"
 
 [[package]]
 name = "decodetree"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "nom",
  "nom_locate",

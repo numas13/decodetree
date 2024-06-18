@@ -194,6 +194,11 @@ pub struct DecodeTree<T> {
     pub root: Group<T>,
 }
 
+fn args_push(args: &mut Vec<Value>, value: Value) {
+    args.retain(|a| a.name != value.name);
+    args.push(value);
+}
+
 impl<T> DecodeTree<T>
 where
     T: Insn,
@@ -240,16 +245,17 @@ where
                 }
                 E::FieldRef(i) => {
                     let r = self.fields.get(&i.field.to_string()).unwrap().clone();
-                    args.push(Value::new_field(i.name.to_string(), r));
+                    args_push(&mut args, Value::new_field(i.name.to_string(), r));
                 }
                 E::Const(i) => {
-                    args.push(Value::new_const(i.name().to_string(), i.value()));
+                    args_push(&mut args, Value::new_const(i.name().to_string(), i.value()));
                 }
                 E::FormatRef(i) => {
                     let r = self.formats.get(&i.to_string()).unwrap().clone();
                     fm = fm.bit_or(&r.mask);
                     fo = fo.bit_or(&r.opcode);
                     sets.extend(r.sets.iter().cloned());
+                    args.retain(|a| !r.args.iter().any(|j| a.name == j.name));
                     args.extend_from_slice(&r.args);
                 }
             }
@@ -359,7 +365,7 @@ where
             let mut m = T::zero();
             let mut o = T::zero();
             let mut sets = vec![];
-            let mut args = vec![];
+            let mut args: Vec<Value> = vec![];
             for i in v.items.iter() {
                 match i {
                     E::FixedBits(i) => {
@@ -384,7 +390,7 @@ where
                                 sxt: i.sign_extend(),
                             }],
                         });
-                        args.push(Value::new_field(i.name().to_string(), field));
+                        args_push(&mut args, Value::new_field(i.name().to_string(), field));
                     }
                     E::ArgsRef(i) => {
                         let a = self.args.get(&i.to_string()).unwrap();
@@ -392,10 +398,10 @@ where
                     }
                     E::FieldRef(i) => {
                         let f = self.fields.get(&i.field.to_string()).unwrap().clone();
-                        args.push(Value::new_field(i.name.to_string(), f));
+                        args_push(&mut args, Value::new_field(i.name.to_string(), f));
                     }
                     E::Const(i) => {
-                        args.push(Value::new_const(i.name().to_string(), i.value()));
+                        args_push(&mut args, Value::new_const(i.name().to_string(), i.value()));
                     }
                 }
             }

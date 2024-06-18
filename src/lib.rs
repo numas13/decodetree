@@ -259,13 +259,14 @@ where
 
         for set in &mut sets {
             for arg in set.items.iter_mut() {
-                for i in 0..args.len() {
-                    if args[i].name == arg.name {
-                        arg.value = Some(args[i].kind.clone());
-                        args.remove(i);
-                        break;
+                args.retain(|i| {
+                    if i.name == arg.name {
+                        arg.value = Some(i.kind.clone());
+                        false
+                    } else {
+                        true
                     }
-                }
+                });
             }
         }
 

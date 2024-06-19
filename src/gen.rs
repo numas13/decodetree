@@ -552,8 +552,13 @@ where
         pad: Pad,
         opcodes: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
+        // TODO: fix clippy lints for generated code
         writeln!(out, "#[allow(clippy::collapsible_if)]")?;
         writeln!(out, "#[allow(clippy::single_match)]")?;
+        writeln!(out, "#[allow(clippy::erasing_op)]")?;
+        writeln!(out, "#[allow(clippy::bad_bit_mask)]")?;
+        writeln!(out, "#[allow(clippy::too_many_arguments)]")?;
+        writeln!(out, "#[allow(clippy::unnecessary_cast)]")?;
         if self.stubs {
             writeln!(out, "#[allow(unused_variables)]")?;
         }

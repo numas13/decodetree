@@ -16,7 +16,7 @@ use nom::{
     error::{ErrorKind as NomErrorKind, FromExternalError, ParseError},
     multi::{many0, many0_count, many1, many1_count},
     sequence::{delimited, pair, preceded, separated_pair, terminated},
-    Finish,
+    Finish, InputTake,
 };
 use nom_locate::LocatedSpan;
 
@@ -171,21 +171,14 @@ pub struct ErrorPrinter<'a> {
 }
 
 impl<'a> ErrorPrinter<'a> {
-    fn location_line_width(&self, ln: u32) -> usize {
-        // TODO: 1.67+
-        // 1 + ln.ilog10() as usize
-
-        if ln < 10 {
-            1
-        } else if ln < 100 {
-            2
-        } else if ln < 1000 {
-            3
-        } else if ln < 10000 {
-            4
-        } else {
-            5
+    fn location_line_width(&self, mut ln: u32) -> usize {
+        for i in 1.. {
+            if ln < 10 {
+                return i;
+            }
+            ln /= 10;
         }
+        unreachable!();
     }
 
     fn get_span_line(&self, span: Span<'a>) -> &'a str {
@@ -353,7 +346,7 @@ fn eol(s: Span) -> IResult<()> {
             (),
             preceded(pair(sp0, opt(line_comment)), alt((line_ending, eof))),
         ),
-        |e| e.or_kind(ErrorKind::Unexpected),
+        |_| Error::new(s.take(0), ErrorKind::Unexpected),
     )(s)
 }
 
@@ -434,7 +427,7 @@ fn number<T: FromStrRadix>(s: Span) -> IResult<Number<T>> {
             value,
             span,
         }),
-        |e| e.or_kind(Expected::Number),
+        |_| Error::new(s.take(0), Expected::Number),
     )(s)
 }
 

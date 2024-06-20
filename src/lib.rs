@@ -121,6 +121,7 @@ impl From<&parser::ArgsDef<'_>> for Args {
 
 #[derive(Clone, Debug)]
 pub enum ValueKind {
+    Set(Args),
     Field(Rc<Field>),
     Const(i64),
 }
@@ -132,6 +133,13 @@ pub struct Value {
 }
 
 impl Value {
+    fn new_set(name: String, args: Args) -> Self {
+        Self {
+            name,
+            kind: ValueKind::Set(args),
+        }
+    }
+
     fn new_field(name: String, field: Rc<Field>) -> Self {
         Self {
             name,
@@ -145,6 +153,18 @@ impl Value {
             kind: ValueKind::Const(value),
         }
     }
+
+    pub fn is_set(&self) -> bool {
+        matches!(self.kind, ValueKind::Set(..))
+    }
+
+    pub fn is_field(&self) -> bool {
+        matches!(self.kind, ValueKind::Field(..))
+    }
+
+    pub fn is_const(&self) -> bool {
+        matches!(self.kind, ValueKind::Const(..))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -152,7 +172,6 @@ pub struct Pattern<T> {
     pub mask: T,
     pub opcode: T,
     pub name: String,
-    pub sets: Vec<Args>,
     pub args: Vec<Value>,
 }
 
@@ -195,8 +214,44 @@ pub struct DecodeTree<T> {
 }
 
 fn args_push(args: &mut Vec<Value>, value: Value) {
-    args.retain(|a| a.name != value.name);
-    args.push(value);
+    match &value.kind {
+        ValueKind::Set(..) => args.push(value),
+        ValueKind::Field(..) | ValueKind::Const(..) => {
+            // fill empty slot in fist set
+            for arg in args.iter_mut() {
+                if let ValueKind::Set(set) = &mut arg.kind {
+                    if let Some(item) = set
+                        .items
+                        .iter_mut()
+                        .find(|i| i.value.is_none() && i.name == value.name)
+                    {
+                        item.value = Some(value.kind);
+                        return;
+                    }
+                }
+            }
+
+            // override slot in last set
+            for arg in args.iter_mut().rev() {
+                if let ValueKind::Set(set) = &mut arg.kind {
+                    if let Some(item) = set.items.iter_mut().find(|i| i.name == value.name) {
+                        item.value = Some(value.kind);
+                        return;
+                    }
+                }
+            }
+
+            // remove last field/const with the same name
+            if let Some(i) = args
+                .iter()
+                .position(|i| (i.is_field() || i.is_const()) && i.name == value.name)
+            {
+                args.remove(i);
+            }
+
+            args.push(value);
+        }
+    }
 }
 
 impl<T> DecodeTree<T>
@@ -211,7 +266,6 @@ where
         let mut fo = T::zero();
         let mut m = T::zero();
         let mut o = T::zero();
-        let mut sets = vec![];
         let mut args = vec![];
         for i in def.items.iter() {
             match i {
@@ -237,11 +291,11 @@ where
                             sxt: i.sign_extend(),
                         }],
                     });
-                    args.push(Value::new_field(i.name().to_string(), field));
+                    args_push(&mut args, Value::new_field(i.name().to_string(), field));
                 }
                 E::ArgsRef(i) => {
                     let r = self.args.get(&i.to_string()).unwrap();
-                    sets.push(r.clone());
+                    args_push(&mut args, Value::new_set(r.name.clone(), r.clone()));
                 }
                 E::FieldRef(i) => {
                     let r = self.fields.get(&i.field.to_string()).unwrap().clone();
@@ -254,35 +308,27 @@ where
                     let r = self.formats.get(&i.to_string()).unwrap().clone();
                     fm = fm.bit_or(&r.mask);
                     fo = fo.bit_or(&r.opcode);
-                    sets.extend(r.sets.iter().cloned());
-                    args.retain(|a| !r.args.iter().any(|j| a.name == j.name));
-                    args.extend_from_slice(&r.args);
+                    for i in &r.args {
+                        args_push(&mut args, i.clone());
+                    }
                 }
             }
         }
         m = m.bit_or(&fm);
         o = o.bit_or(&fo);
 
-        for set in &mut sets {
-            for arg in set.items.iter_mut() {
-                args.retain(|i| {
-                    if i.name == arg.name {
-                        arg.value = Some(i.kind.clone());
-                        false
-                    } else {
-                        true
-                    }
-                });
+        for arg in &args {
+            if let ValueKind::Set(ref set) = arg.kind {
+                for i in set.items.iter().filter(|i| i.value.is_none()) {
+                    eprintln!("error: undefined {} in {}.{}", i.name, def.name, arg.name);
+                }
             }
         }
-
-        // TODO: validate sets
 
         Pattern {
             mask: m,
             opcode: o,
             name: def.name.to_string(),
-            sets,
             args,
         }
     }
@@ -364,7 +410,6 @@ where
             let mut p = mem::size_of::<T>() as u32 * 8;
             let mut m = T::zero();
             let mut o = T::zero();
-            let mut sets = vec![];
             let mut args: Vec<Value> = vec![];
             for i in v.items.iter() {
                 match i {
@@ -394,7 +439,7 @@ where
                     }
                     E::ArgsRef(i) => {
                         let a = self.args.get(&i.to_string()).unwrap();
-                        sets.push(a.clone());
+                        args_push(&mut args, Value::new_set(a.name.clone(), a.clone()));
                     }
                     E::FieldRef(i) => {
                         let f = self.fields.get(&i.field.to_string()).unwrap().clone();
@@ -410,7 +455,6 @@ where
                 k.to_string(),
                 Rc::new(Pattern {
                     name: k.to_string(),
-                    sets,
                     args,
                     mask: m,
                     opcode: o,

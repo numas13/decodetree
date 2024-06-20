@@ -6,7 +6,7 @@ use std::{
     io::{self, Write},
 };
 
-use crate::{DecodeTree, Field, FieldItem, Group, Insn, Item, Pattern, ValueKind};
+use crate::{Args, DecodeTree, Field, FieldItem, Group, Insn, Item, Pattern, ValueKind};
 
 #[derive(Copy, Clone)]
 pub struct Pad(usize);
@@ -181,12 +181,10 @@ where
         for (name, ty) in self.gen.additional_args() {
             write!(out, ", {name}: {ty}")?;
         }
-        for i in &pattern.sets {
-            write!(out, ", {0}: &args_{0}", i.name)?;
-        }
         for i in pattern.args.iter().filter(|i| self.gen.pass_arg(&i.name)) {
             write!(out, ", {0}: ", i.name)?;
             match i.kind {
+                ValueKind::Set(ref set) => write!(out, "&args_{}", set.name)?,
                 ValueKind::Field(_) => write!(out, "isize")?,
                 ValueKind::Const(_) => write!(out, "i64")?,
             }
@@ -341,12 +339,13 @@ where
         Ok(())
     }
 
-    fn gen_extract_sets<W: Write>(&self, out: &mut W, i: &Pattern<T>, pad: Pad) -> io::Result<()> {
-        for set in &i.sets {
-            writeln!(out, "{pad}let {0} = args_{0} {{", set.name)?;
-            for arg in &set.items {
-                write!(out, "{}{}: ", pad.shift(), arg.name)?;
-                match arg.value.as_ref().unwrap() {
+    fn gen_extract_set<W: Write>(&self, out: &mut W, pad: Pad, set: &Args) -> io::Result<()> {
+        writeln!(out, "{pad}let {0} = args_{0} {{", set.name)?;
+        for arg in &set.items {
+            write!(out, "{}{}: ", pad.shift(), arg.name)?;
+            if let Some(value) = arg.value.as_ref() {
+                match value {
+                    ValueKind::Set(..) => todo!(),
                     ValueKind::Field(f) => {
                         if f.name.is_empty() {
                             writeln!(out, "{{")?;
@@ -360,34 +359,37 @@ where
                         write!(out, "{v}")?;
                     }
                 }
-                if let Some(ref ty) = arg.ty {
-                    write!(out, " as {ty}")?;
-                }
-                writeln!(out, ",")?;
+            } else {
+                // TODO: generate error for undefined fields in sets
+                panic!();
             }
-            writeln!(out, "{pad}}};")?;
+            if let Some(ref ty) = arg.ty {
+                write!(out, " as {ty}")?;
+            }
+            writeln!(out, ",")?;
         }
+        writeln!(out, "{pad}}};")?;
         Ok(())
     }
 
     fn gen_extract_args<W: Write>(&self, out: &mut W, i: &Pattern<T>, pad: Pad) -> io::Result<()> {
         for arg in i.args.iter().filter(|i| self.gen.pass_arg(&i.name)) {
-            write!(out, "{pad}let {} = ", arg.name)?;
             match arg.kind {
+                ValueKind::Set(ref set) => self.gen_extract_set(out, pad, set)?,
                 ValueKind::Field(ref f) => {
+                    write!(out, "{pad}let {} = ", arg.name)?;
                     if f.name.is_empty() {
                         writeln!(out, "{{")?;
                         self.gen_extract_filed(out, f, pad.shift())?;
-                        write!(out, "{pad}}}")?;
+                        writeln!(out, "{pad}}};")?;
                     } else {
-                        write!(out, "self.extract_{}(insn)", f.name)?;
+                        writeln!(out, "self.extract_{}(insn);", f.name)?;
                     }
                 }
                 ValueKind::Const(v) => {
-                    write!(out, "{v}")?;
+                    writeln!(out, "{pad}let {} = {v};", arg.name)?;
                 }
             }
-            writeln!(out, ";")?;
         }
         Ok(())
     }
@@ -398,17 +400,17 @@ where
         pad: Pad,
         pattern: &Pattern<T>,
     ) -> io::Result<()> {
-        self.gen_extract_sets(out, pattern, pad)?;
         self.gen_extract_args(out, pattern, pad)?;
         write!(out, "{pad}if Self::trans_{}(self", pattern.name)?;
         for (name, _) in self.gen.additional_args() {
             write!(out, ", {name}")?;
         }
-        for set in &pattern.sets {
-            write!(out, ", &{}", set.name)?;
-        }
         for arg in pattern.args.iter().filter(|i| self.gen.pass_arg(&i.name)) {
-            write!(out, ", {}", arg.name)?;
+            if arg.is_set() {
+                write!(out, ", &{}", arg.name)?;
+            } else {
+                write!(out, ", {}", arg.name)?;
+            }
         }
         writeln!(out, ") {{")?;
         self.gen.gen_on_success(out, pad.shift(), pattern)?;

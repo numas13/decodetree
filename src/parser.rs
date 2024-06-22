@@ -656,7 +656,7 @@ fn stmt(s: Span) -> IResult<Stmt> {
     )(s)
 }
 
-pub struct Parser<'a, T> {
+pub struct Parser<'a, T = super::DefaultInsn> {
     src: &'a str,
     insn_size: u32,
     is_fixed_insn: bool,

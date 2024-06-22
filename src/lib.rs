@@ -14,6 +14,8 @@ pub use crate::parser::Parser;
 #[cfg(feature = "gen")]
 pub use crate::gen::Generator;
 
+type DefaultInsn = u32;
+
 pub trait Insn: Sized + Copy + Clone + Eq + Ord + Hash + LowerHex + Default {
     // TODO: zero_extract
     // TODO: sign_extract
@@ -270,7 +272,7 @@ impl Cond<Span<'_>> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Pattern<I, S = String> {
+pub struct Pattern<I = DefaultInsn, S = String> {
     pub mask: I,
     pub opcode: I,
     pub name: S,
@@ -291,7 +293,7 @@ impl<I> Pattern<I, Span<'_>> {
 }
 
 #[derive(Clone, Debug)]
-pub enum OverlapItem<I, S = String> {
+pub enum OverlapItem<I = DefaultInsn, S = String> {
     Pattern(Pattern<I, S>),
     Group(Box<Group<I, S>>),
 }
@@ -315,7 +317,7 @@ impl<I, S> OverlapItem<I, S> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Overlap<I, S = String> {
+pub struct Overlap<I = DefaultInsn, S = String> {
     pub mask: I,
     pub opcode: I,
     pub items: Vec<OverlapItem<I, S>>,
@@ -341,7 +343,7 @@ impl<I, S> Overlap<I, S> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Group<I, S = String> {
+pub struct Group<I = DefaultInsn, S = String> {
     pub mask: I,
     pub items: Vec<Item<I, S>>,
 }
@@ -405,15 +407,15 @@ impl<I> Item<I, Span<'_>> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct DecodeTree<I> {
+pub struct DecodeTree<I = DefaultInsn> {
     pub fields: HashMap<String, Field>,
     pub args: HashMap<String, Args>,
     pub root: Group<I>,
 }
 
-pub fn parse<T>(src: &str) -> Result<DecodeTree<T>, Errors>
+pub fn parse<I>(src: &str) -> Result<DecodeTree<I>, Errors>
 where
-    T: Insn,
+    I: Insn,
 {
     Parser::new(src).parse()
 }

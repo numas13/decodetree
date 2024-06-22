@@ -4,7 +4,10 @@ fn main() {
     let args: Vec<_> = env::args().collect();
     let path = args[1].as_str();
     let src = fs::read_to_string(path).unwrap();
-    match decodetree::parse::<u32>(&src) {
+    let res = decodetree::Parser::<u32>::new(&src)
+        .set_insn_fixed_size(false)
+        .parse();
+    match res {
         Ok(tree) => {
             println!("{tree:#?}");
         }

@@ -1,23 +1,26 @@
-pub(crate) mod parser;
+mod error;
+mod parser;
 
 #[cfg(feature = "gen")]
 pub mod gen;
 
-pub use parser::ErrorPrinter;
-pub use parser::Errors;
+use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem};
+
+use crate::parser::Span;
+
+pub use crate::error::{ErrorPrinter, Errors};
+pub use crate::parser::Parser;
 
 #[cfg(feature = "gen")]
-pub use gen::Generator;
+pub use crate::gen::Generator;
 
-use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem, rc::Rc};
-
-pub trait Insn: Sized + Copy + Clone + Eq + Ord + Hash + LowerHex {
+pub trait Insn: Sized + Copy + Clone + Eq + Ord + Hash + LowerHex + Default {
     // TODO: zero_extract
     // TODO: sign_extract
     fn width() -> u32;
     fn zero() -> Self;
     fn ones() -> Self;
-    fn set_bit(&mut self, offset: u32);
+    fn set_bit(&mut self, offset: u32, bit: bool);
     fn bit_not(&self) -> Self;
     fn bit_and(&self, other: &Self) -> Self;
     fn bit_andn(&self, other: &Self) -> Self;
@@ -39,8 +42,10 @@ macro_rules! impl_insn {
                 !0
             }
 
-            fn set_bit(&mut self, offset: u32) {
-                *self |= 1 << offset;
+            fn set_bit(&mut self, offset: u32, bit: bool) {
+                if bit && offset < Self::width() {
+                    *self |= (bit as $t) << offset;
+                }
             }
 
             fn bit_not(&self) -> Self {
@@ -65,31 +70,64 @@ macro_rules! impl_insn {
 impl_insn!(u8, u16, u32, u64, u128);
 
 #[derive(Clone, Debug)]
-pub enum FieldItem {
+pub enum FieldItem<S = String> {
     Field {
         pos: u32,
         len: u32,
         sxt: bool,
     },
     FieldRef {
-        field: Rc<Field>,
+        field: Field<S>,
         len: u32,
         sxt: bool,
     },
 }
 
-#[derive(Clone, Debug)]
-pub struct Field {
-    pub name: String,
-    pub func: Option<String>,
-    pub items: Vec<FieldItem>,
+impl FieldItem<Span<'_>> {
+    fn convert(self) -> FieldItem {
+        match self {
+            Self::Field { pos, len, sxt } => FieldItem::Field { pos, len, sxt },
+            Self::FieldRef { field, len, sxt } => FieldItem::FieldRef {
+                field: field.convert(),
+                len,
+                sxt,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct Arg {
-    pub name: String,
-    pub ty: Option<String>,
-    pub value: Option<ValueKind>,
+pub struct Field<S = String> {
+    pub name: Option<S>,
+    pub func: Option<S>,
+    pub items: Vec<FieldItem<S>>,
+}
+
+impl Field<Span<'_>> {
+    fn convert(self) -> Field {
+        Field {
+            name: self.name.map(|s| s.to_string()),
+            func: self.func.map(|s| s.to_string()),
+            items: self.items.into_iter().map(|i| i.convert()).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Arg<S = String> {
+    pub name: S,
+    pub ty: Option<S>,
+    pub value: Option<ValueKind<S>>,
+}
+
+impl Arg<Span<'_>> {
+    fn convert(self) -> Arg {
+        Arg {
+            name: self.name.to_string(),
+            ty: self.ty.map(|s| s.to_string()),
+            value: self.value.map(|v| v.convert()),
+        }
+    }
 }
 
 impl From<&parser::Arg<'_>> for Arg {
@@ -102,11 +140,31 @@ impl From<&parser::Arg<'_>> for Arg {
     }
 }
 
+impl<'a> From<&parser::Arg<'a>> for Arg<Span<'a>> {
+    fn from(value: &parser::Arg<'a>) -> Self {
+        Self {
+            name: value.name,
+            ty: value.ty,
+            value: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct Args {
-    pub name: String,
+pub struct Args<S = String> {
+    pub name: S,
     pub is_extern: bool,
-    pub items: Vec<Arg>,
+    pub items: Vec<Arg<S>>,
+}
+
+impl Args<Span<'_>> {
+    fn convert(self) -> Args {
+        Args {
+            name: self.name.to_string(),
+            is_extern: self.is_extern,
+            items: self.items.into_iter().map(|i| i.convert()).collect(),
+        }
+    }
 }
 
 impl From<&parser::ArgsDef<'_>> for Args {
@@ -119,35 +177,55 @@ impl From<&parser::ArgsDef<'_>> for Args {
     }
 }
 
+impl<'a> From<&parser::ArgsDef<'a>> for Args<Span<'a>> {
+    fn from(value: &parser::ArgsDef<'a>) -> Self {
+        Self {
+            name: value.name,
+            is_extern: value.is_extern,
+            items: value.args.iter().map(Arg::from).collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub enum ValueKind {
-    Set(Args),
-    Field(Rc<Field>),
+pub enum ValueKind<S = String> {
+    Set(Args<S>),
+    Field(Field<S>),
     Const(i64),
 }
 
-#[derive(Clone, Debug)]
-pub struct Value {
-    pub name: String,
-    pub kind: ValueKind,
+impl ValueKind<Span<'_>> {
+    fn convert(self) -> ValueKind {
+        match self {
+            Self::Set(args) => ValueKind::Set(args.convert()),
+            Self::Field(field) => ValueKind::Field(field.convert()),
+            Self::Const(value) => ValueKind::Const(value),
+        }
+    }
 }
 
-impl Value {
-    fn new_set(name: String, args: Args) -> Self {
+#[derive(Clone, Debug)]
+pub struct Value<S = String> {
+    pub name: S,
+    pub kind: ValueKind<S>,
+}
+
+impl<S> Value<S> {
+    fn new_set(name: S, args: Args<S>) -> Self {
         Self {
             name,
             kind: ValueKind::Set(args),
         }
     }
 
-    fn new_field(name: String, field: Rc<Field>) -> Self {
+    fn new_field(name: S, field: Field<S>) -> Self {
         Self {
             name,
             kind: ValueKind::Field(field),
         }
     }
 
-    fn new_const(name: String, value: i64) -> Self {
+    fn new_const(name: S, value: i64) -> Self {
         Self {
             name,
             kind: ValueKind::Const(value),
@@ -167,37 +245,68 @@ impl Value {
     }
 }
 
+impl Value<Span<'_>> {
+    fn convert(self) -> Value {
+        Value {
+            name: self.name.to_string(),
+            kind: self.kind.convert(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct Pattern<T> {
-    pub mask: T,
-    pub opcode: T,
-    pub name: String,
-    pub args: Vec<Value>,
+pub struct Pattern<I, S = String> {
+    pub mask: I,
+    pub opcode: I,
+    pub name: S,
+    pub args: Vec<Value<S>>,
+}
+
+impl<I> Pattern<I, Span<'_>> {
+    fn convert(self) -> Pattern<I> {
+        Pattern {
+            mask: self.mask,
+            opcode: self.opcode,
+            name: self.name.to_string(),
+            args: self.args.into_iter().map(|i| i.convert()).collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Group<T> {
-    pub mask: T,
-    pub opcode: T,
+pub struct Group<I, S = String> {
+    pub mask: I,
+    pub opcode: I,
     pub overlap: bool,
-    pub items: Vec<Item<T>>,
+    pub items: Vec<Item<I, S>>,
+}
+
+impl<I> Group<I, Span<'_>> {
+    fn convert(self) -> Group<I> {
+        Group {
+            mask: self.mask,
+            opcode: self.opcode,
+            overlap: self.overlap,
+            items: self.items.into_iter().map(|i| i.convert()).collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
-pub enum Item<T> {
-    Pattern(Pattern<T>),
-    Group(Box<Group<T>>),
+pub enum Item<I, S = String> {
+    Pattern(Pattern<I, S>),
+    Group(Box<Group<I, S>>),
 }
 
-impl<T: Copy> Item<T> {
-    pub fn opcode(&self) -> T {
+impl<I: Copy, S> Item<I, S> {
+    pub fn opcode(&self) -> I {
         match self {
             Self::Pattern(i) => i.opcode,
             Self::Group(i) => i.opcode,
         }
     }
 
-    pub fn mask(&self) -> T {
+    pub fn mask(&self) -> I {
         match self {
             Self::Pattern(i) => i.mask,
             Self::Group(i) => i.mask,
@@ -205,284 +314,25 @@ impl<T: Copy> Item<T> {
     }
 }
 
+impl<I> Item<I, Span<'_>> {
+    fn convert(self) -> Item<I> {
+        match self {
+            Self::Pattern(pattern) => Item::Pattern(pattern.convert()),
+            Self::Group(group) => Item::Group(Box::new(group.convert())),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
-pub struct DecodeTree<T> {
-    pub fields: HashMap<String, Rc<Field>>,
+pub struct DecodeTree<I> {
+    pub fields: HashMap<String, Field>,
     pub args: HashMap<String, Args>,
-    pub formats: HashMap<String, Rc<Pattern<T>>>,
-    pub root: Group<T>,
-}
-
-fn args_push(args: &mut Vec<Value>, value: Value) {
-    match &value.kind {
-        ValueKind::Set(..) => args.push(value),
-        ValueKind::Field(..) | ValueKind::Const(..) => {
-            // fill empty slot in fist set
-            for arg in args.iter_mut() {
-                if let ValueKind::Set(set) = &mut arg.kind {
-                    if let Some(item) = set
-                        .items
-                        .iter_mut()
-                        .find(|i| i.value.is_none() && i.name == value.name)
-                    {
-                        item.value = Some(value.kind);
-                        return;
-                    }
-                }
-            }
-
-            // override slot in last set
-            for arg in args.iter_mut().rev() {
-                if let ValueKind::Set(set) = &mut arg.kind {
-                    if let Some(item) = set.items.iter_mut().find(|i| i.name == value.name) {
-                        item.value = Some(value.kind);
-                        return;
-                    }
-                }
-            }
-
-            // remove last field/const with the same name
-            if let Some(i) = args
-                .iter()
-                .position(|i| (i.is_field() || i.is_const()) && i.name == value.name)
-            {
-                args.remove(i);
-            }
-
-            args.push(value);
-        }
-    }
-}
-
-impl<T> DecodeTree<T>
-where
-    T: Insn,
-{
-    fn pattern_def(&mut self, def: &parser::PatternDef) -> Pattern<T> {
-        use parser::PatternItem as E;
-
-        let mut p = mem::size_of::<T>() as u32 * 8;
-        let mut fm = T::zero();
-        let mut fo = T::zero();
-        let mut m = T::zero();
-        let mut o = T::zero();
-        let mut args = vec![];
-        for i in def.items.iter() {
-            match i {
-                E::FixedBits(i) => {
-                    for c in i.chars() {
-                        p -= 1;
-                        if c == '0' || c == '1' {
-                            m.set_bit(p);
-                        }
-                        if c == '1' {
-                            o.set_bit(p);
-                        }
-                    }
-                }
-                E::Field(i) => {
-                    p -= i.len();
-                    let field = Rc::new(Field {
-                        name: String::new(),
-                        func: None,
-                        items: vec![FieldItem::Field {
-                            pos: p,
-                            len: i.len(),
-                            sxt: i.sign_extend(),
-                        }],
-                    });
-                    args_push(&mut args, Value::new_field(i.name().to_string(), field));
-                }
-                E::ArgsRef(i) => {
-                    let r = self.args.get(&i.to_string()).unwrap();
-                    args_push(&mut args, Value::new_set(r.name.clone(), r.clone()));
-                }
-                E::FieldRef(i) => {
-                    let r = self.fields.get(&i.field.to_string()).unwrap().clone();
-                    args_push(&mut args, Value::new_field(i.name.to_string(), r));
-                }
-                E::Const(i) => {
-                    args_push(&mut args, Value::new_const(i.name().to_string(), i.value()));
-                }
-                E::FormatRef(i) => {
-                    let r = self.formats.get(&i.to_string()).unwrap().clone();
-                    fm = fm.bit_or(&r.mask);
-                    fo = fo.bit_or(&r.opcode);
-                    for i in &r.args {
-                        args_push(&mut args, i.clone());
-                    }
-                }
-            }
-        }
-        m = m.bit_or(&fm);
-        o = o.bit_or(&fo);
-
-        for arg in &args {
-            if let ValueKind::Set(ref set) = arg.kind {
-                for i in set.items.iter().filter(|i| i.value.is_none()) {
-                    eprintln!("error: undefined {} in {}.{}", i.name, def.name, arg.name);
-                }
-            }
-        }
-
-        Pattern {
-            mask: m,
-            opcode: o,
-            name: def.name.to_string(),
-            args,
-        }
-    }
-
-    fn group(&mut self, group: &parser::Group) -> Group<T> {
-        use parser::GroupItem as E;
-
-        let mut mask = T::ones();
-        let mut opcode = T::zero();
-        let mut items = vec![];
-        for i in group.items.iter() {
-            let e = match i {
-                E::PatternDef(def) => {
-                    let p = self.pattern_def(def);
-                    mask = mask.bit_and(&p.mask);
-                    opcode = opcode.bit_or(&p.opcode);
-                    Item::Pattern(p)
-                }
-                E::Group(group) => {
-                    let g = self.group(group);
-                    mask = mask.bit_and(&g.mask);
-                    opcode = opcode.bit_or(&g.opcode);
-                    Item::Group(Box::new(g))
-                }
-            };
-            items.push(e);
-        }
-
-        opcode = opcode.bit_and(&mask);
-
-        Group {
-            mask,
-            opcode,
-            overlap: group.overlap,
-            items,
-        }
-    }
-
-    fn from(&mut self, data: &parser::Data) {
-        for (k, v) in data.fields.iter() {
-            let mut items = vec![];
-
-            for f in &v.items {
-                let e = match f {
-                    parser::Field::Unnamed(f) => FieldItem::Field {
-                        pos: f.pos(),
-                        len: f.len(),
-                        sxt: f.sign_extend(),
-                    },
-                    parser::Field::Named(f) => {
-                        let field = self.fields.get(f.name()).unwrap().clone();
-                        FieldItem::FieldRef {
-                            field,
-                            len: f.len(),
-                            sxt: f.sign_extend(),
-                        }
-                    }
-                };
-                items.push(e);
-            }
-
-            self.fields.insert(
-                k.to_string(),
-                Rc::new(Field {
-                    name: k.to_string(),
-                    func: v.func.map(|i| i.to_string()),
-                    items,
-                }),
-            );
-        }
-
-        for (k, v) in data.args.iter() {
-            self.args.insert(k.to_string(), v.into());
-        }
-
-        for (k, v) in data.formats.iter() {
-            use parser::FormatItem as E;
-
-            let mut p = mem::size_of::<T>() as u32 * 8;
-            let mut m = T::zero();
-            let mut o = T::zero();
-            let mut args: Vec<Value> = vec![];
-            for i in v.items.iter() {
-                match i {
-                    E::FixedBits(i) => {
-                        for c in i.chars() {
-                            p -= 1;
-                            if c == '0' || c == '1' {
-                                m.set_bit(p);
-                            }
-                            if c == '1' {
-                                o.set_bit(p);
-                            }
-                        }
-                    }
-                    E::Field(i) => {
-                        p -= i.len();
-                        let field = Rc::new(Field {
-                            name: String::new(),
-                            func: None,
-                            items: vec![FieldItem::Field {
-                                pos: p,
-                                len: i.len(),
-                                sxt: i.sign_extend(),
-                            }],
-                        });
-                        args_push(&mut args, Value::new_field(i.name().to_string(), field));
-                    }
-                    E::ArgsRef(i) => {
-                        let a = self.args.get(&i.to_string()).unwrap();
-                        args_push(&mut args, Value::new_set(a.name.clone(), a.clone()));
-                    }
-                    E::FieldRef(i) => {
-                        let f = self.fields.get(&i.field.to_string()).unwrap().clone();
-                        args_push(&mut args, Value::new_field(i.name.to_string(), f));
-                    }
-                    E::Const(i) => {
-                        args_push(&mut args, Value::new_const(i.name().to_string(), i.value()));
-                    }
-                }
-            }
-
-            self.formats.insert(
-                k.to_string(),
-                Rc::new(Pattern {
-                    name: k.to_string(),
-                    args,
-                    mask: m,
-                    opcode: o,
-                }),
-            );
-        }
-
-        for i in data.root.items.iter() {
-            match i {
-                parser::GroupItem::PatternDef(def) => {
-                    let pattern = self.pattern_def(def);
-                    self.root.items.push(Item::Pattern(pattern));
-                }
-                parser::GroupItem::Group(def) => {
-                    let group = self.group(def);
-                    self.root.items.push(Item::Group(Box::new(group)));
-                }
-            }
-        }
-    }
+    pub root: Group<I>,
 }
 
 pub fn parse<T>(src: &str) -> Result<DecodeTree<T>, Errors>
 where
-    T: Insn + Default,
+    T: Insn,
 {
-    let data = parser::parse(T::width(), src)?;
-    let mut tree = DecodeTree::default();
-    tree.from(&data);
-    Ok(tree)
+    Parser::new(src).parse()
 }

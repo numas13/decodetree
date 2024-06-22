@@ -288,7 +288,7 @@ where
                     write!(
                         out,
                         "{func}(Self::extract_{}(insn), 0, {len}) as isize",
-                        field.name
+                        field.name.as_ref().unwrap()
                     )?;
                 }
             }
@@ -311,7 +311,7 @@ where
                         writeln!(
                             out,
                             "{pad}out |= {s}extract(Self::extract_{}(insn), 0, {len}) as isize;",
-                            field.name
+                            field.name.as_ref().unwrap()
                         )?;
                     }
                 }
@@ -330,7 +330,8 @@ where
             writeln!(
                 out,
                 "{pad}fn extract_{}(&mut self, insn: {}) -> isize {{",
-                field.name, self.type_name
+                field.name.as_ref().unwrap(),
+                self.type_name
             )?;
             self.gen_extract_filed(out, field, pad.shift())?;
             writeln!(out, "{pad}}}",)?;
@@ -347,12 +348,12 @@ where
                 match value {
                     ValueKind::Set(..) => todo!(),
                     ValueKind::Field(f) => {
-                        if f.name.is_empty() {
+                        if let Some(ref name) = f.name {
+                            write!(out, "self.extract_{name}(insn)")?;
+                        } else {
                             writeln!(out, "{{")?;
                             self.gen_extract_filed(out, f, pad.shift2())?;
                             write!(out, "{}}}", pad.shift())?;
-                        } else {
-                            write!(out, "self.extract_{}(insn)", f.name)?;
                         }
                     }
                     ValueKind::Const(v) => {
@@ -378,12 +379,12 @@ where
                 ValueKind::Set(ref set) => self.gen_extract_set(out, pad, set)?,
                 ValueKind::Field(ref f) => {
                     write!(out, "{pad}let {} = ", arg.name)?;
-                    if f.name.is_empty() {
+                    if let Some(ref name) = f.name {
+                        writeln!(out, "self.extract_{name}(insn);")?;
+                    } else {
                         writeln!(out, "{{")?;
                         self.gen_extract_filed(out, f, pad.shift())?;
                         writeln!(out, "{pad}}};")?;
-                    } else {
-                        writeln!(out, "self.extract_{}(insn);", f.name)?;
                     }
                 }
                 ValueKind::Const(v) => {

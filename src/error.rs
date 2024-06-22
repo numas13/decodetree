@@ -10,6 +10,7 @@ use crate::parser::Span;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Expected {
     Identifier,
+    IdentifierOrTilde,
     Hexadecimal,
     Decimal,
     Number,
@@ -25,10 +26,11 @@ impl fmt::Display for Expected {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Identifier => write!(fmt, "identifier"),
+            Self::IdentifierOrTilde => write!(fmt, "`~` or identifier"),
             Self::Hexadecimal => write!(fmt, "hexadecimal number"),
             Self::Decimal => write!(fmt, "decimal number"),
             Self::Number => write!(fmt, "number"),
-            Self::NumberOrS => write!(fmt, "number or `s`"),
+            Self::NumberOrS => write!(fmt, "`s` or number"),
             Self::Space => write!(fmt, "space"),
             Self::ArgType => write!(fmt, "arg type"),
             Self::Char(c) => write!(fmt, "char `{c}`"),

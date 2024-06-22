@@ -254,12 +254,28 @@ impl Value<Span<'_>> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cond<S = String> {
+    pub invert: bool,
+    pub name: S,
+}
+
+impl Cond<Span<'_>> {
+    fn convert(self) -> Cond {
+        Cond {
+            invert: self.invert,
+            name: self.name.to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Pattern<I, S = String> {
     pub mask: I,
     pub opcode: I,
     pub name: S,
     pub args: Vec<Value<S>>,
+    pub cond: Vec<Cond<S>>,
 }
 
 impl<I> Pattern<I, Span<'_>> {
@@ -269,6 +285,7 @@ impl<I> Pattern<I, Span<'_>> {
             opcode: self.opcode,
             name: self.name.to_string(),
             args: self.args.into_iter().map(|i| i.convert()).collect(),
+            cond: self.cond.into_iter().map(|i| i.convert()).collect(),
         }
     }
 }

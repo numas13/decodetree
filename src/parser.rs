@@ -412,6 +412,39 @@ fn format_field(s: Span) -> IResult<NamedField> {
     named_field(s)
 }
 
+type Cond<'a> = super::Cond<Span<'a>>;
+
+fn cond_item(s: Span) -> IResult<Cond> {
+    let (s, invert) = alt((value(true, char('~')), success(false)))(s)?;
+    let (s, name) = map_err(identifier, |e| {
+        if !invert {
+            e.or_kind(Expected::IdentifierOrTilde)
+        } else {
+            e
+        }
+    })(s)?;
+    Ok((s, Cond { invert, name }))
+}
+
+fn cond_list(s: Span) -> IResult<Vec<Cond>> {
+    if let (s, Some(_)) = opt(char('?'))(s)? {
+        if let (s, Some(first)) = preceded(sp0, opt(cond_item))(s)? {
+            fold_many0(
+                preceded(sp1, cut(cond_item)),
+                || vec![first.clone()],
+                |mut vec, cond| {
+                    vec.push(cond);
+                    vec
+                },
+            )(s)
+        } else {
+            Ok((s, vec![]))
+        }
+    } else {
+        Ok((s, vec![]))
+    }
+}
+
 pub type FormatItem<'a> = PatternItem<'a>;
 
 fn format_item(s: Span) -> IResult<FormatItem> {
@@ -432,7 +465,8 @@ pub type FormatDef<'a> = PatternDef<'a>;
 fn format_def(s: Span) -> IResult<FormatDef> {
     let (s, name) = format_name(s)?;
     let (s, items) = cut(many1(preceded(sp1, format_item)))(s)?;
-    Ok((s, FormatDef::new(name, items)))
+    let (s, cond) = preceded(sp0, cond_list)(s)?;
+    Ok((s, FormatDef::new(name, items, cond)))
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -511,18 +545,20 @@ fn pattern_item(s: Span) -> IResult<PatternItem> {
 pub struct PatternDef<'a> {
     pub name: Span<'a>,
     pub items: Vec<PatternItem<'a>>,
+    cond: Vec<Cond<'a>>,
 }
 
 impl<'a> PatternDef<'a> {
-    fn new(name: Span<'a>, items: Vec<PatternItem<'a>>) -> Self {
-        Self { name, items }
+    fn new(name: Span<'a>, items: Vec<PatternItem<'a>>, cond: Vec<Cond<'a>>) -> Self {
+        Self { name, items, cond }
     }
 }
 
 fn pattern_def(s: Span) -> IResult<PatternDef> {
     let (s, name) = identifier(s)?;
     let (s, items) = cut(many1(preceded(sp1, pattern_item)))(s)?;
-    Ok((s, PatternDef::new(name, items)))
+    let (s, cond) = preceded(sp0, cond_list)(s)?;
+    Ok((s, PatternDef::new(name, items, cond)))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -677,6 +713,17 @@ fn args_push<'a>(args: &mut Vec<super::Value<Span<'a>>>, value: super::Value<Spa
     }
 }
 
+fn cond_push<'a>(list: &mut Vec<Cond<'a>>, cond: &Cond<'a>) {
+    if let Some(prev) = list
+        .iter_mut()
+        .find(|i| i.name.fragment() == cond.name.fragment())
+    {
+        prev.invert = cond.invert;
+    } else {
+        list.push(cond.clone());
+    }
+}
+
 impl<'a, I> Parser<'a, I>
 where
     I: Insn,
@@ -784,6 +831,7 @@ where
         let mut mask = I::zero();
         let mut opcode = I::zero();
         let mut args = vec![];
+        let mut cond = vec![];
 
         for i in def.items.iter() {
             match i {
@@ -811,6 +859,9 @@ where
                         opcode = opcode.bit_or(&format.opcode);
                         for i in &format.args {
                             args_push(&mut args, i.clone());
+                        }
+                        for i in &format.cond {
+                            cond_push(&mut cond, i);
                         }
                     } else {
                         self.errors.undefined(*r, Token::Format);
@@ -863,11 +914,16 @@ where
             }
         }
 
+        for i in &def.cond {
+            cond_push(&mut cond, i);
+        }
+
         super::Pattern {
             name: def.name,
             mask,
             opcode,
             args,
+            cond,
         }
     }
 
@@ -1122,6 +1178,7 @@ mod tests {
                     FormatItem::args_ref(span!(s[25; 4])),
                     FormatItem::const_val(span!(s[30; 1]), num!(s[32; 2])),
                 ],
+                cond: vec![],
             }
         )), format_def(s.into()));
     }
@@ -1142,6 +1199,7 @@ mod tests {
                     PatternItem::format_ref(span!(s[30; 1])),
                     PatternItem::const_val(span!(s[32; 1]), num!(s[34; 2])),
                 ],
+                cond: vec![],
             }
         )), pattern_def(s.into()));
     }

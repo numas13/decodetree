@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     cmp::Ord,
     collections::{HashMap, HashSet},
     fmt,
@@ -35,10 +34,6 @@ impl fmt::Display for Pad {
 
 #[allow(unused_variables)]
 pub trait Gen<T> {
-    fn additional_cond(&self, pattern: &Pattern<T>) -> Option<Cow<'static, str>> {
-        None
-    }
-
     fn pass_arg(&self, name: &str) -> bool {
         true
     }
@@ -144,6 +139,8 @@ impl GeneratorBuilder {
             stubs: self.stubs,
             gen,
             tree,
+            opcodes: Default::default(),
+            conditions: Default::default(),
         }
     }
 }
@@ -156,6 +153,8 @@ pub struct Generator<'a, T, G = ()> {
     stubs: bool,
     gen: G,
     tree: &'a DecodeTree<T>,
+    opcodes: HashSet<&'a str>,
+    conditions: HashSet<&'a str>,
 }
 
 impl<'a, T, G> Generator<'a, T, G>
@@ -172,13 +171,17 @@ where
         out: &mut W,
         pad: Pad,
         pattern: &'a Pattern<T>,
-        opcodes: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
-        if opcodes.contains(pattern.name.as_str()) {
+        if self.opcodes.contains(pattern.name.as_str()) {
             return Ok(());
         }
 
-        opcodes.insert(&pattern.name);
+        self.opcodes.insert(&pattern.name);
+
+        for i in &pattern.cond {
+            self.conditions.insert(&i.name);
+        }
+
         write!(out, "{pad}fn trans_{}(&mut self", pattern.name)?;
         for (name, ty) in self.gen.additional_args() {
             write!(out, ", {name}: {ty}")?;
@@ -212,14 +215,13 @@ where
         out: &mut W,
         pad: Pad,
         item: &'a OverlapItem<T>,
-        opcodes: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
         match &item {
             OverlapItem::Pattern(p) => {
-                self.gen_trans_proto_pattern(out, pad, p, opcodes)?;
+                self.gen_trans_proto_pattern(out, pad, p)?;
             }
             OverlapItem::Group(g) => {
-                self.gen_trans_proto_group(out, pad, g, opcodes)?;
+                self.gen_trans_proto_group(out, pad, g)?;
             }
         }
         Ok(())
@@ -230,10 +232,9 @@ where
         out: &mut W,
         pad: Pad,
         group: &'a Overlap<T>,
-        opcodes: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
         for i in &group.items {
-            self.gen_trans_proto_overlap_item(out, pad, i, opcodes)?;
+            self.gen_trans_proto_overlap_item(out, pad, i)?;
         }
         Ok(())
     }
@@ -243,14 +244,13 @@ where
         out: &mut W,
         pad: Pad,
         item: &'a Item<T>,
-        opcodes: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
         match &item {
             Item::Pattern(p) => {
-                self.gen_trans_proto_pattern(out, pad, p, opcodes)?;
+                self.gen_trans_proto_pattern(out, pad, p)?;
             }
             Item::Overlap(g) => {
-                self.gen_trans_proto_overlap(out, pad, g, opcodes)?;
+                self.gen_trans_proto_overlap(out, pad, g)?;
             }
         }
         Ok(())
@@ -261,10 +261,18 @@ where
         out: &mut W,
         pad: Pad,
         group: &'a Group<T>,
-        opcodes: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
         for i in &group.items {
-            self.gen_trans_proto_group_item(out, pad, i, opcodes)?;
+            self.gen_trans_proto_group_item(out, pad, i)?;
+        }
+        Ok(())
+    }
+
+    fn gen_cond_proto<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+        let mut list: Vec<_> = self.conditions.iter().collect();
+        list.sort();
+        for i in &list {
+            writeln!(out, "{pad}fn cond_{i}(&self) -> bool;")?;
         }
         Ok(())
     }
@@ -507,8 +515,10 @@ where
                             // TODO: comment file:line
                             writeln!(out, "{pad}// {:#x}:{:#x}", pat.mask, pat.opcode)?;
                             write!(out, "{pad}{:#x}", pat.opcode.bit_and(&m))?;
-                            if let Some(cond) = self.gen.additional_cond(pat) {
-                                write!(out, " if {cond}")?;
+                            for (i, cond) in pat.cond.iter().enumerate() {
+                                write!(out, " {} ", if i == 0 { "if" } else { "&&" })?;
+                                let inv = if cond.invert { "!" } else { "" };
+                                write!(out, "{inv}self.cond_{}()", cond.name)?;
                             }
                             writeln!(out, " => {{")?;
                             self.gen_call_trans_func(out, pad.shift(), pat)?;
@@ -548,11 +558,12 @@ where
                     writeln!(out, "{pad}// {:#x}:{:#x}", pat.mask, pat.opcode)?;
                     let m = pat.mask.bit_andn(&prev);
                     let o = pat.opcode.bit_andn(&prev);
-                    write!(out, "{pad}if")?;
-                    if let Some(cond) = self.gen.additional_cond(pat) {
-                        write!(out, " {cond} &&")?;
+                    write!(out, "{pad}if ")?;
+                    for cond in &pat.cond {
+                        let inv = if cond.invert { "!" } else { "" };
+                        write!(out, "{inv}self.cond_{}() && ", cond.name)?;
                     }
-                    writeln!(out, " insn & {m:#x} == {o:#x} {{ ")?;
+                    writeln!(out, "insn & {m:#x} == {o:#x} {{ ")?;
                     self.gen_call_trans_func(out, pad.shift(), pat)?;
                     writeln!(out, "{pad}}}")?;
                 }
@@ -588,12 +599,7 @@ where
         writeln!(out, "{pad}}}")
     }
 
-    fn gen_trait<W: Write>(
-        &mut self,
-        out: &mut W,
-        pad: Pad,
-        opcodes: &mut HashSet<&'a str>,
-    ) -> io::Result<()> {
+    fn gen_trait<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
         // TODO: fix clippy lints for generated code
         writeln!(out, "#[allow(clippy::collapsible_if)]")?;
         writeln!(out, "#[allow(clippy::single_match)]")?;
@@ -605,11 +611,13 @@ where
             writeln!(out, "#[allow(unused_variables)]")?;
         }
         writeln!(out, "{pad}pub trait {}: Sized {{", self.trait_name)?;
-        self.gen_user_func_proto(out, pad.shift())?;
-        self.gen_extract_fields(out, pad.shift())?;
-        self.gen_trans_proto_group(out, pad.shift(), &self.tree.root, opcodes)?;
-        self.gen_decode(out, pad.shift())?;
-        self.gen.gen_trait_body(out, pad.shift())?;
+        let p = pad.shift();
+        self.gen_user_func_proto(out, p)?;
+        self.gen_extract_fields(out, p)?;
+        self.gen_trans_proto_group(out, p, &self.tree.root)?;
+        self.gen_cond_proto(out, p)?;
+        self.gen_decode(out, p)?;
+        self.gen.gen_trait_body(out, p)?;
         writeln!(out, "{pad}}}")?;
         Ok(())
     }
@@ -620,9 +628,8 @@ where
 
         self.gen_args(out, pad)?;
 
-        let mut opcodes = HashSet::new();
-        self.gen_trait(out, pad, &mut opcodes)?;
-        self.gen.gen_opcodes(out, pad, &opcodes)?;
+        self.gen_trait(out, pad)?;
+        self.gen.gen_opcodes(out, pad, &self.opcodes)?;
 
         writeln!(out)?;
         self.gen.gen_end(out, pad)?;

@@ -68,6 +68,7 @@ pub enum ErrorKind<'a> {
     Overflow(u32, u32),
     InsnSize(u32, u32),
     Overlap(Span<'a>),
+    InvalidOpcode,
     Nom(NomErrorKind),
 }
 
@@ -155,6 +156,7 @@ impl fmt::Display for Error<'_> {
                 "instruction size must be {insn_size} bits but got {len} bits"
             ),
             E::Overlap(..) => write!(fmt, "pattern overlap"),
+            E::InvalidOpcode => write!(fmt, "opcode differs for shared part in an overlap group"),
         }
     }
 }
@@ -317,7 +319,7 @@ impl fmt::Display for ErrorPrinter<'_> {
                 format!("offset is {pos} but the instruction is {bits} bits wide")
             }
             ErrorKind::Unexpected | ErrorKind::Expected(..) => "here".to_string(),
-            ErrorKind::Overflow(..) => "defined here".to_string(),
+            ErrorKind::Overflow(..) | ErrorKind::InvalidOpcode => "defined here".to_string(),
             ErrorKind::Overlap(prev) => format!("overlaps with `{}`", &prev),
             _ => String::new(),
         };
@@ -379,6 +381,10 @@ impl<'a> Errors<'a> {
 
     pub(crate) fn overlap(&mut self, cur: Span<'a>, prev: Span<'a>) {
         self.push(cur, ErrorKind::Overlap(prev));
+    }
+
+    pub(crate) fn invalid_opcode(&mut self, cur: Span<'a>) {
+        self.push(cur, ErrorKind::InvalidOpcode);
     }
 
     pub fn is_empty(&self) -> bool {

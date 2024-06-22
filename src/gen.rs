@@ -6,7 +6,9 @@ use std::{
     io::{self, Write},
 };
 
-use crate::{Args, DecodeTree, Field, FieldItem, Group, Insn, Item, Pattern, ValueKind};
+use crate::{
+    Args, DecodeTree, Field, FieldItem, Group, Insn, Item, Overlap, OverlapItem, Pattern, ValueKind,
+};
 
 #[derive(Copy, Clone)]
 pub struct Pad(usize);
@@ -205,20 +207,38 @@ where
         Ok(())
     }
 
-    fn gen_trans_proto_group<W: Write>(
+    fn gen_trans_proto_overlap_item<W: Write>(
         &mut self,
         out: &mut W,
         pad: Pad,
-        group: &'a Group<T>,
+        item: &'a OverlapItem<T>,
         opcodes: &mut HashSet<&'a str>,
     ) -> io::Result<()> {
-        for i in &group.items {
-            self.gen_trans_proto_item(out, pad, i, opcodes)?;
+        match &item {
+            OverlapItem::Pattern(p) => {
+                self.gen_trans_proto_pattern(out, pad, p, opcodes)?;
+            }
+            OverlapItem::Group(g) => {
+                self.gen_trans_proto_group(out, pad, g, opcodes)?;
+            }
         }
         Ok(())
     }
 
-    fn gen_trans_proto_item<W: Write>(
+    fn gen_trans_proto_overlap<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        group: &'a Overlap<T>,
+        opcodes: &mut HashSet<&'a str>,
+    ) -> io::Result<()> {
+        for i in &group.items {
+            self.gen_trans_proto_overlap_item(out, pad, i, opcodes)?;
+        }
+        Ok(())
+    }
+
+    fn gen_trans_proto_group_item<W: Write>(
         &mut self,
         out: &mut W,
         pad: Pad,
@@ -229,9 +249,22 @@ where
             Item::Pattern(p) => {
                 self.gen_trans_proto_pattern(out, pad, p, opcodes)?;
             }
-            Item::Group(g) => {
-                self.gen_trans_proto_group(out, pad, g, opcodes)?;
+            Item::Overlap(g) => {
+                self.gen_trans_proto_overlap(out, pad, g, opcodes)?;
             }
+        }
+        Ok(())
+    }
+
+    fn gen_trans_proto_group<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        group: &'a Group<T>,
+        opcodes: &mut HashSet<&'a str>,
+    ) -> io::Result<()> {
+        for i in &group.items {
+            self.gen_trans_proto_group_item(out, pad, i, opcodes)?;
         }
         Ok(())
     }
@@ -481,9 +514,9 @@ where
                             self.gen_call_trans_func(out, pad.shift(), pat)?;
                             writeln!(out, "{pad}}}")?;
                         }
-                        Item::Group(group) => {
+                        Item::Overlap(group) => {
                             writeln!(out, "{pad}{:#x} => {{", group.opcode.bit_and(&m))?;
-                            self.gen_decode_group(out, pad.shift(), group, m.bit_or(&next_mask))?;
+                            self.gen_decode_overlap(out, pad.shift(), group, m.bit_or(&next_mask))?;
                             writeln!(out, "{pad}}}")?;
                         }
                     }
@@ -501,6 +534,36 @@ where
         Ok(())
     }
 
+    fn gen_decode_overlap<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        group: &Overlap<T>,
+        prev: T,
+    ) -> io::Result<()> {
+        writeln!(out, "{pad}// overlap group",)?;
+        for i in &group.items {
+            match i {
+                OverlapItem::Pattern(pat) => {
+                    writeln!(out, "{pad}// {:#x}:{:#x}", pat.mask, pat.opcode)?;
+                    let m = pat.mask.bit_andn(&prev);
+                    let o = pat.opcode.bit_andn(&prev);
+                    write!(out, "{pad}if")?;
+                    if let Some(cond) = self.gen.additional_cond(pat) {
+                        write!(out, " {cond} &&")?;
+                    }
+                    writeln!(out, " insn & {m:#x} == {o:#x} {{ ")?;
+                    self.gen_call_trans_func(out, pad.shift(), pat)?;
+                    writeln!(out, "{pad}}}")?;
+                }
+                OverlapItem::Group(group) => {
+                    self.gen_decode_group(out, pad, group, prev)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn gen_decode_group<W: Write>(
         &mut self,
         out: &mut W,
@@ -508,30 +571,6 @@ where
         group: &Group<T>,
         prev: T,
     ) -> io::Result<()> {
-        if group.overlap {
-            writeln!(out, "{pad}// overlap group",)?;
-            for i in &group.items {
-                match i {
-                    Item::Pattern(pat) => {
-                        writeln!(out, "{pad}// {:#x}:{:#x}", pat.mask, pat.opcode)?;
-                        let m = pat.mask.bit_andn(&prev);
-                        let o = pat.opcode.bit_andn(&prev);
-                        write!(out, "{pad}if")?;
-                        if let Some(cond) = self.gen.additional_cond(pat) {
-                            write!(out, " {cond} &&")?;
-                        }
-                        writeln!(out, " insn & {m:#x} == {o:#x} {{ ")?;
-                        self.gen_call_trans_func(out, pad.shift(), pat)?;
-                        writeln!(out, "{pad}}}")?;
-                    }
-                    Item::Group(group) => {
-                        self.gen_decode_group(out, pad, group, prev)?;
-                    }
-                }
-            }
-            return Ok(());
-        }
-
         let items = group.items.iter().collect();
         self.gen_decode_group_items(out, items, pad, prev)
     }

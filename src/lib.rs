@@ -273,11 +273,59 @@ impl<I> Pattern<I, Span<'_>> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum OverlapItem<I, S = String> {
+    Pattern(Pattern<I, S>),
+    Group(Box<Group<I, S>>),
+}
+
+impl<I> OverlapItem<I, Span<'_>> {
+    fn convert(self) -> OverlapItem<I> {
+        match self {
+            Self::Pattern(pattern) => OverlapItem::Pattern(pattern.convert()),
+            Self::Group(group) => OverlapItem::Group(Box::new(group.convert())),
+        }
+    }
+}
+
+impl<I, S> OverlapItem<I, S> {
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        match self {
+            OverlapItem::Pattern(pattern) => pattern,
+            OverlapItem::Group(group) => group.first_pattern(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Overlap<I, S = String> {
+    pub mask: I,
+    pub opcode: I,
+    pub items: Vec<OverlapItem<I, S>>,
+}
+
+impl<I> Overlap<I, Span<'_>> {
+    fn convert(self) -> Overlap<I> {
+        Overlap {
+            mask: self.mask,
+            opcode: self.opcode,
+            items: self.items.into_iter().map(|i| i.convert()).collect(),
+        }
+    }
+}
+
+impl<I, S> Overlap<I, S> {
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        self.items
+            .first()
+            .expect("group must not be empty")
+            .first_pattern()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Group<I, S = String> {
     pub mask: I,
-    pub opcode: I,
-    pub overlap: bool,
     pub items: Vec<Item<I, S>>,
 }
 
@@ -285,31 +333,47 @@ impl<I> Group<I, Span<'_>> {
     fn convert(self) -> Group<I> {
         Group {
             mask: self.mask,
-            opcode: self.opcode,
-            overlap: self.overlap,
             items: self.items.into_iter().map(|i| i.convert()).collect(),
         }
+    }
+}
+
+impl<I, S> Group<I, S> {
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        self.items
+            .first()
+            .expect("group must not be empty")
+            .first_pattern()
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum Item<I, S = String> {
     Pattern(Pattern<I, S>),
-    Group(Box<Group<I, S>>),
+    Overlap(Box<Overlap<I, S>>),
 }
 
 impl<I: Copy, S> Item<I, S> {
     pub fn opcode(&self) -> I {
         match self {
             Self::Pattern(i) => i.opcode,
-            Self::Group(i) => i.opcode,
+            Self::Overlap(i) => i.opcode,
         }
     }
 
     pub fn mask(&self) -> I {
         match self {
             Self::Pattern(i) => i.mask,
-            Self::Group(i) => i.mask,
+            Self::Overlap(i) => i.mask,
+        }
+    }
+}
+
+impl<I, S> Item<I, S> {
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        match self {
+            Self::Pattern(pattern) => pattern,
+            Self::Overlap(overlap) => overlap.first_pattern(),
         }
     }
 }
@@ -318,7 +382,7 @@ impl<I> Item<I, Span<'_>> {
     fn convert(self) -> Item<I> {
         match self {
             Self::Pattern(pattern) => Item::Pattern(pattern.convert()),
-            Self::Group(group) => Item::Group(Box::new(group.convert())),
+            Self::Overlap(group) => Item::Overlap(Box::new(group.convert())),
         }
     }
 }

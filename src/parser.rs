@@ -13,7 +13,7 @@ use nom::{
         space1,
     },
     combinator::{cut, eof, map, opt, recognize, success, value, verify},
-    multi::{fold_many1, many0, many0_count, many1, many1_count},
+    multi::{fold_many0, many0, many0_count, many1, many1_count},
     sequence::{delimited, pair, preceded, separated_pair, terminated},
     Finish,
 };
@@ -557,7 +557,10 @@ impl<'a> Group<'a> {
     }
 
     fn push_group(&mut self, other: Box<Group<'a>>) {
-        if !self.overlap && !other.overlap {
+        if other.items.is_empty() {
+            return;
+        }
+        if self.overlap == other.overlap {
             self.items.extend_from_slice(&other.items);
         } else {
             self.items.push(GroupItem::Group(other));
@@ -572,7 +575,7 @@ fn group_delimited<'a>(
 ) -> impl FnMut(Span<'a>) -> IResult<'a, Group<'a>> {
     delimited(
         preceded(whitespace0, char(open)),
-        cut(fold_many1(
+        cut(fold_many0(
             group_item,
             move || Group {
                 overlap,
@@ -888,9 +891,11 @@ where
         self.root.push_group(Box::new(group));
     }
 
-    fn create_group(&mut self, group: &Group<'a>) -> super::Group<I, Span<'a>> {
-        use super::Item;
+    fn create_overlap_group(&mut self, group: &Group<'a>) -> super::Overlap<I, Span<'a>> {
+        use super::OverlapItem;
         use GroupItem as E;
+
+        assert!(group.overlap);
 
         let mut mask = I::ones();
         let mut opcode = I::zero();
@@ -902,62 +907,102 @@ where
                     let p = self.create_pattern(def, false);
                     mask = mask.bit_and(&p.mask);
                     opcode = opcode.bit_or(&p.opcode);
-                    Item::Pattern(p)
+                    OverlapItem::Pattern(p)
                 }
                 E::Group(group) => {
                     let g = self.create_group(group);
                     mask = mask.bit_and(&g.mask);
-                    opcode = opcode.bit_or(&g.opcode);
-                    Item::Group(Box::new(g))
+                    OverlapItem::Group(Box::new(g))
                 }
             };
             items.push(e);
         }
 
-        opcode = opcode.bit_and(&mask);
-
-        // TODO: group overlaps
-        if group.overlap {
-            let mut mask = I::ones();
-            for a in items.iter() {
-                if let Item::Pattern(a) = a {
+        let mut mask = I::ones();
+        for a in items.iter() {
+            match a {
+                OverlapItem::Pattern(a) => {
+                    mask = mask.bit_and(&a.mask);
+                }
+                OverlapItem::Group(a) => {
                     mask = mask.bit_and(&a.mask);
                 }
             }
-            let mut first = true;
-            let mut opcode = I::zero();
-            for a in items.iter() {
-                if let Item::Pattern(a) = a {
-                    let opc = a.opcode.bit_and(&mask);
+        }
+
+        let mut first = true;
+        let mut opcode = I::zero();
+        for i in items.iter() {
+            match i {
+                OverlapItem::Pattern(pat) => {
+                    let opc = pat.opcode.bit_and(&mask);
                     if first {
                         opcode = opc;
                         first = false;
                     } else if opcode != opc {
-                        self.errors.invalid_opcode(a.name);
+                        self.errors.invalid_opcode(pat.name);
                     }
                 }
-            }
-        } else {
-            for (i, a) in items.iter().enumerate() {
-                if let Item::Pattern(a) = a {
-                    for b in items.iter().skip(i + 1) {
-                        if let Item::Pattern(b) = b {
-                            let mask = a.mask.bit_and(&b.mask);
-                            if a.opcode.bit_and(&mask) == b.opcode.bit_and(&mask) {
-                                self.errors.overlap(b.name, a.name);
-                            }
+                OverlapItem::Group(group) => {
+                    for i in &group.items {
+                        let opc = i.opcode().bit_and(&mask);
+                        if first {
+                            opcode = opc;
+                            first = false;
+                        } else if opcode != opc {
+                            self.errors.invalid_opcode(i.first_pattern().name);
                         }
                     }
                 }
             }
         }
 
-        super::Group {
+        opcode = opcode.bit_and(&mask);
+
+        super::Overlap {
             mask,
             opcode,
-            overlap: group.overlap,
             items,
         }
+    }
+
+    fn create_group(&mut self, group: &Group<'a>) -> super::Group<I, Span<'a>> {
+        use super::Item;
+        use GroupItem as E;
+
+        assert!(!group.overlap);
+
+        let mut mask = I::ones();
+        let mut items = vec![];
+
+        for i in group.items.iter() {
+            let e = match i {
+                E::PatternDef(def) => {
+                    let p = self.create_pattern(def, false);
+                    mask = mask.bit_and(&p.mask);
+                    Item::Pattern(p)
+                }
+                E::Group(group) => {
+                    let g = self.create_overlap_group(group);
+                    mask = mask.bit_and(&g.mask);
+                    Item::Overlap(Box::new(g))
+                }
+            };
+            items.push(e);
+        }
+
+        for (i, a) in items.iter().enumerate() {
+            let a = a.first_pattern();
+            for b in items.iter().skip(i + 1) {
+                let b = b.first_pattern();
+                let mask = a.mask.bit_and(&b.mask);
+                if a.opcode.bit_and(&mask) == b.opcode.bit_and(&mask) {
+                    self.errors.overlap(b.name, a.name);
+                }
+            }
+        }
+
+        super::Group { mask, items }
     }
 
     pub fn parse(mut self) -> Result<DecodeTree<I>, Errors<'a>> {

@@ -166,6 +166,14 @@ where
         GeneratorBuilder::default()
     }
 
+    fn gen_comment<W: Write>(&self, out: &mut W, pad: Pad, msg: &str) -> io::Result<()> {
+        let width = 60;
+        writeln!(out, "{pad}///{:/<width$}///", "")?;
+        writeln!(out, "{pad}// {msg:width$} //")?;
+        writeln!(out, "{pad}///{:/<width$}///", "")?;
+        writeln!(out)
+    }
+
     fn gen_trans_proto_pattern<W: Write>(
         &mut self,
         out: &mut W,
@@ -269,15 +277,22 @@ where
     }
 
     fn gen_cond_proto<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+        if self.conditions.is_empty() {
+            return Ok(());
+        }
+
         let mut list: Vec<_> = self.conditions.iter().collect();
         list.sort();
+
+        self.gen_comment(out, pad, "Conditions")?;
         for i in &list {
             writeln!(out, "{pad}fn cond_{i}(&self) -> bool;")?;
         }
-        Ok(())
+        writeln!(out)
     }
 
     fn gen_args<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
+        self.gen_comment(out, pad, "Argument sets")?;
         for args in self.tree.args.values().filter(|i| !i.is_extern) {
             writeln!(out, "{pad}#[allow(non_camel_case_types)]")?;
             if args.items.is_empty() {
@@ -295,7 +310,8 @@ where
         Ok(())
     }
 
-    fn gen_user_func_proto<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
+    fn gen_extern_func_proto<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
+        self.gen_comment(out, pad, "Extern functions")?;
         let mut set = HashSet::new();
         for i in self.tree.fields.values().filter_map(|i| i.func.as_deref()) {
             if !set.contains(i) {
@@ -306,10 +322,9 @@ where
                 } else {
                     writeln!(out, ";")?;
                 }
-                writeln!(out)?;
             }
         }
-        Ok(())
+        writeln!(out)
     }
 
     fn gen_extract_filed<W: Write>(&self, out: &mut W, field: &Field, pad: Pad) -> io::Result<()> {
@@ -367,6 +382,7 @@ where
     }
 
     fn gen_extract_fields<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
+        self.gen_comment(out, pad, "Extract functions")?;
         for field in self.tree.fields.values() {
             writeln!(
                 out,
@@ -612,28 +628,28 @@ where
         }
         writeln!(out, "{pad}pub trait {}: Sized {{", self.trait_name)?;
         let p = pad.shift();
-        self.gen_user_func_proto(out, p)?;
+        self.gen_extern_func_proto(out, p)?;
         self.gen_extract_fields(out, p)?;
+        self.gen_comment(out, p, "Translations")?;
         self.gen_trans_proto_group(out, p, &self.tree.root)?;
         self.gen_cond_proto(out, p)?;
+        self.gen_comment(out, p, "Decode function")?;
         self.gen_decode(out, p)?;
+        writeln!(out)?;
+        self.gen_comment(out, p, "Extern gen trait body")?;
         self.gen.gen_trait_body(out, p)?;
-        writeln!(out, "{pad}}}")?;
-        Ok(())
+        writeln!(out, "{pad}}}")
     }
 
     pub fn gen<W: Write>(&mut self, mut out: W) -> io::Result<()> {
         let pad = Pad(0);
         let out = &mut out;
-
         self.gen_args(out, pad)?;
-
         self.gen_trait(out, pad)?;
-        self.gen.gen_opcodes(out, pad, &self.opcodes)?;
-
         writeln!(out)?;
-        self.gen.gen_end(out, pad)?;
-
-        Ok(())
+        self.gen_comment(out, pad, "Extern gen opcodes")?;
+        self.gen.gen_opcodes(out, pad, &self.opcodes)?;
+        self.gen_comment(out, pad, "Extern gen end")?;
+        self.gen.gen_end(out, pad)
     }
 }

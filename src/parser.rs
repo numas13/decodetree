@@ -1,727 +1,418 @@
+mod parse;
+
 use std::{
     collections::hash_map::{Entry, HashMap},
-    mem,
-    num::ParseIntError,
-    str,
+    mem, str,
 };
 
-use nom::{
-    branch::alt,
-    bytes::complete::{take_while, take_while1},
-    character::complete::{
-        digit1, hex_digit1, line_ending, multispace0, not_line_ending, one_of, satisfy, space0,
-        space1,
-    },
-    combinator::{cut, eof, map, opt, recognize, success, value, verify},
-    multi::{fold_many0, many0, many0_count, many1, many1_count},
-    sequence::{delimited, pair, preceded, separated_pair, terminated},
-    Finish,
-};
-use nom_locate::LocatedSpan;
+use nom::Finish;
 
 use crate::{
-    error::{Error, ErrorKind, Errors, Expected, Token},
-    DecodeTree, Insn,
+    error::{ErrorKind, Errors, Token},
+    DecodeTree, DefaultInsn, Insn,
 };
 
-type IResult<'a, T = Span<'a>, I = Span<'a>, E = Error<'a>> = nom::IResult<I, T, E>;
+pub use parse::Span;
 
-pub type Span<'a> = LocatedSpan<&'a str>;
-
-fn map_err<'a, T, F, M>(mut inner: F, mut map: M) -> impl FnMut(Span<'a>) -> IResult<'a, T>
-where
-    F: FnMut(Span<'a>) -> IResult<'a, T>,
-    M: FnMut(Error<'a>) -> Error<'a>,
-{
-    use nom::Err;
-
-    move |input| {
-        inner(input).map_err(|err| match err {
-            Err::Incomplete(n) => Err::Incomplete(n),
-            Err::Error(err) => Err::Error(map(err)),
-            Err::Failure(err) => Err::Failure(err),
-        })
-    }
+#[derive(Clone, Debug)]
+pub enum FieldItem<S = String> {
+    Field {
+        pos: u32,
+        len: u32,
+        sxt: bool,
+    },
+    FieldRef {
+        field: Field<S>,
+        len: u32,
+        sxt: bool,
+    },
 }
 
-fn map_fail<'a, T, F, M>(mut inner: F, mut map: M) -> impl FnMut(Span<'a>) -> IResult<'a, T>
-where
-    F: FnMut(Span<'a>) -> IResult<'a, T>,
-    M: FnMut(Error<'a>) -> Error<'a>,
-{
-    use nom::Err;
-
-    move |input| {
-        inner(input).map_err(|err| match err {
-            Err::Incomplete(n) => Err::Incomplete(n),
-            Err::Error(err) => Err::Error(map(err)),
-            Err::Failure(err) => Err::Failure(map(err)),
-        })
-    }
-}
-
-fn char<'a>(c: char) -> impl FnMut(Span<'a>) -> IResult<'a, char> {
-    map_err(nom::character::complete::char(c), move |e| {
-        e.or_kind_take(Expected::Char(c), |_| true)
-    })
-}
-
-fn tag<'a>(s: &'static str) -> impl FnMut(Span<'a>) -> IResult<'a> {
-    map_err(nom::bytes::complete::tag(s), move |e| {
-        e.or_kind_take(Expected::Tag(s), |c| !c.is_alphanumeric())
-    })
-}
-
-fn line_break(s: Span) -> IResult<()> {
-    value((), delimited(space0, pair(char('\\'), line_ending), space0))(s)
-}
-
-fn sp0(s: Span) -> IResult<()> {
-    map_err(
-        value((), many0_count(alt((line_break, value((), space1))))),
-        |e| e.or_kind_take(Expected::Space, |_| true),
-    )(s)
-}
-
-fn sp1(s: Span) -> IResult<()> {
-    map_err(
-        value((), many1_count(alt((line_break, value((), space1))))),
-        |e| e.or_kind_take(Expected::Space, |_| true),
-    )(s)
-}
-
-fn line_comment(s: Span) -> IResult<()> {
-    value((), preceded(char('#'), not_line_ending))(s)
-}
-
-fn whitespace0(s: Span) -> IResult<()> {
-    value(
-        (),
-        terminated(
-            many0_count(preceded(multispace0, line_comment)),
-            multispace0,
-        ),
-    )(s)
-}
-
-fn eol(s: Span) -> IResult<()> {
-    let a = pair(sp0, opt(line_comment));
-    let b = map_err(alt((line_ending, eof)), |e| {
-        e.or_kind_take(ErrorKind::Unexpected, |c| c.is_whitespace())
-    });
-    value((), preceded(a, b))(s)
-}
-
-trait FromStrRadix: Sized {
-    fn from_str_radix(src: &str, radix: u32) -> Result<Self, ParseIntError>;
-}
-
-macro_rules! impl_from_str_radix {
-    ($($ty:ty),+$(,)?) => (
-        $(
-            impl FromStrRadix for $ty {
-                fn from_str_radix(src: &str, radix: u32) -> Result<Self, ParseIntError> {
-                    <$ty>::from_str_radix(src, radix)
-                }
-            }
-         )+
-    );
-}
-
-impl_from_str_radix! {
-    i8,
-    i16,
-    i32,
-    i64,
-    i128,
-    u8,
-    u16,
-    u32,
-    u64,
-    u128,
-}
-
-fn hexadecimal(s: Span) -> IResult<Span> {
-    map_fail(
-        recognize(preceded(pair(char('0'), one_of("xX")), hex_digit1)),
-        move |_| Error::new(s, Expected::Hexadecimal),
-    )(s)
-}
-
-fn hexadecimal_n<T: FromStrRadix>(s: Span) -> IResult<(Span, T)> {
-    let (s, value) = hexadecimal(s)?;
-    let n = T::from_str_radix(&s[2..], 16).unwrap();
-    Ok((s, (value, n)))
-}
-
-fn is_valid_decimal(s: &Span) -> bool {
-    if s.len() > 1 {
-        s.chars().next().map_or(false, |c| ('1'..='9').contains(&c))
-    } else {
-        true
-    }
-}
-
-fn decimal_n<T: FromStrRadix>(s: Span) -> IResult<(Span, T)> {
-    let (s, value) = map_fail(
-        recognize(pair(opt(char('-')), verify(digit1, is_valid_decimal))),
-        move |_| Error::new(s, Expected::Decimal),
-    )(s)?;
-    Ok((s, (value, T::from_str_radix(*value, 10).unwrap())))
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-struct Number<'a, T> {
-    value: T,
-    span: Span<'a>,
-}
-
-impl<'a, T> Number<'a, T> {
-    #[cfg(test)]
-    fn new(value: T, span: Span<'a>) -> Self {
-        Self { value, span }
-    }
-}
-
-fn number<T: FromStrRadix>(s: Span) -> IResult<Number<T>> {
-    map_err(
-        map(alt((decimal_n, hexadecimal_n)), |(span, value)| Number {
-            value,
-            span,
-        }),
-        |e| e.or_kind_take(Expected::Number, |c| c.is_whitespace()),
-    )(s)
-}
-
-fn identifier(s: Span) -> IResult {
-    let first = map_err(satisfy(|c: char| c.is_alphabetic() || c == '_'), |e| {
-        e.or_kind_take(Expected::Identifier, |c| c.is_whitespace())
-    });
-    let tail = take_while(|c: char| c.is_alphanumeric() || c == '_');
-    recognize(pair(first, tail))(s)
-}
-
-fn preceded_name<'a>(prefix: char) -> impl FnMut(Span<'a>) -> IResult<'a> {
-    preceded(char(prefix), cut(identifier))
-}
-
-fn field_name(s: Span) -> IResult {
-    preceded_name('%')(s)
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct FieldRef<'a> {
-    pub name: Span<'a>,
-    pub field: Span<'a>,
-}
-
-fn field_ref(s: Span) -> IResult<FieldRef> {
-    let p = pair(opt(terminated(identifier, char('='))), field_name);
-    map(p, |(name, field)| FieldRef {
-        name: name.unwrap_or(field),
-        field,
-    })(s)
-}
-
-fn args_name(s: Span) -> IResult {
-    preceded_name('&')(s)
-}
-
-fn args_ref(s: Span) -> IResult {
-    args_name(s)
-}
-
-fn format_name(s: Span) -> IResult {
-    preceded_name('@')(s)
-}
-
-fn format_ref(s: Span) -> IResult {
-    format_name(s)
-}
-
-fn s_len<T: FromStrRadix>(s: Span) -> IResult<(bool, Number<T>)> {
-    let (s, signed) = alt((value(true, char('s')), success(false)))(s)?;
-    let (s, len) = map_fail(cut(number), |e| {
-        if !signed {
-            e.or_kind(Expected::NumberOrS)
-        } else {
-            e
+impl FieldItem<Span<'_>> {
+    fn convert(self) -> FieldItem {
+        match self {
+            Self::Field { pos, len, sxt } => FieldItem::Field { pos, len, sxt },
+            Self::FieldRef { field, len, sxt } => FieldItem::FieldRef {
+                field: field.convert(),
+                len,
+                sxt,
+            },
         }
-    })(s)?;
-    Ok((s, (signed, len)))
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct UnnamedField<'a> {
-    pos: Number<'a, u32>,
-    len: Number<'a, u32>,
-    sxt: bool,
-}
-
-impl<'a> UnnamedField<'a> {
-    pub fn pos(&self) -> u32 {
-        self.pos.value
-    }
-
-    pub fn len(&self) -> u32 {
-        self.len.value
-    }
-
-    pub fn sign_extend(&self) -> bool {
-        self.sxt
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct NamedField<'a> {
-    name: Span<'a>,
-    len: Number<'a, u32>,
-    sxt: bool,
+#[derive(Clone, Debug)]
+pub struct Field<S = String> {
+    pub name: Option<S>,
+    pub func: Option<S>,
+    pub items: Vec<FieldItem<S>>,
 }
 
-impl<'a> NamedField<'a> {
-    fn new(name: Span<'a>, len: Number<'a, u32>, sxt: bool) -> Self {
-        Self { name, len, sxt }
-    }
-
-    pub fn len(&self) -> u32 {
-        self.len.value
-    }
-
-    pub fn sign_extend(&self) -> bool {
-        self.sxt
+impl Field<Span<'_>> {
+    fn convert(self) -> Field {
+        Field {
+            name: self.name.map(|s| s.to_string()),
+            func: self.func.map(|s| s.to_string()),
+            items: self.items.into_iter().map(|i| i.convert()).collect(),
+        }
     }
 }
 
-fn named_field(s: Span) -> IResult<NamedField> {
-    map(
-        separated_pair(identifier, char(':'), s_len),
-        |(name, (sxt, len))| NamedField::new(name, len, sxt),
-    )(s)
+#[derive(Clone, Debug)]
+pub struct Arg<S = String> {
+    pub name: S,
+    pub ty: Option<S>,
+    pub value: Option<ValueKind<S>>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Field<'a> {
-    Unnamed(UnnamedField<'a>),
-    Named(NamedField<'a>),
-}
-
-impl<'a> Field<'a> {
-    fn new_unnamed(pos: Number<'a, u32>, len: Number<'a, u32>, sxt: bool) -> Self {
-        Self::Unnamed(UnnamedField { pos, len, sxt })
-    }
-
-    fn new_named(name: Span<'a>, len: Number<'a, u32>, sxt: bool) -> Self {
-        Self::Named(NamedField { name, len, sxt })
+impl Arg<Span<'_>> {
+    fn convert(self) -> Arg {
+        Arg {
+            name: self.name.to_string(),
+            ty: self.ty.map(|s| s.to_string()),
+            value: self.value.map(|v| v.convert()),
+        }
     }
 }
 
-fn field(s: Span) -> IResult<Field> {
-    let (s, val) = alt((map(number, Ok), map(identifier, Err)))(s)?;
-    let (s, (sxt, len)) = preceded(cut(char(':')), s_len)(s)?;
-    let ret = match val {
-        Ok(num) => Field::new_unnamed(num, len, sxt),
-        Err(name) => Field::new_named(name, len, sxt),
-    };
-    Ok((s, ret))
-}
-
-fn field_fn(s: Span) -> IResult<Span> {
-    let (s, _) = char('!')(s)?;
-    let prefix = pair(tag("function"), char('='));
-    cut(preceded(prefix, identifier))(s)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FieldDef<'a> {
-    pub name: Span<'a>,
-    pub func: Option<Span<'a>>,
-    pub items: Vec<Field<'a>>,
-}
-
-fn field_def(s: Span) -> IResult<FieldDef> {
-    let (s, name) = field_name(s)?;
-    let (s, items) = many0(preceded(sp1, field))(s)?;
-    let (s, func) = opt(preceded(sp1, field_fn))(s)?;
-    Ok((s, FieldDef { name, func, items }))
-}
-
-fn arg_type(s: Span) -> IResult<Span> {
-    map_err(identifier, |e| e.or_kind(Expected::ArgType))(s)
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Arg<'a> {
-    pub(crate) name: Span<'a>,
-    pub(crate) ty: Option<Span<'a>>,
-}
-
-impl<'a> Arg<'a> {
-    fn new(name: Span<'a>, ty: Option<Span<'a>>) -> Self {
-        Self { name, ty }
-    }
-
-    pub fn name(&self) -> &'a str {
-        &self.name
-    }
-
-    pub fn ty(&self) -> Option<&'a str> {
-        self.ty.as_deref().copied()
+impl From<&parse::Arg<'_>> for Arg {
+    fn from(value: &parse::Arg<'_>) -> Self {
+        Self {
+            name: value.name().to_owned(),
+            ty: value.ty().map(str::to_owned),
+            value: None,
+        }
     }
 }
 
-fn arg(s: Span) -> IResult<Arg> {
-    let p = pair(identifier, opt(preceded(char(':'), cut(arg_type))));
-    map(p, |(name, ty)| Arg::new(name, ty))(s)
+impl<'a> From<&parse::Arg<'a>> for Arg<Span<'a>> {
+    fn from(value: &parse::Arg<'a>) -> Self {
+        Self {
+            name: value.name,
+            ty: value.ty,
+            value: None,
+        }
+    }
 }
 
-fn is_extern(s: Span) -> IResult<bool> {
-    let ext = preceded(pair(sp1, char('!')), cut(tag("extern")));
-    alt((value(true, ext), success(false)))(s)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ArgsDef<'a> {
-    pub name: Span<'a>,
+#[derive(Clone, Debug)]
+pub struct Args<S = String> {
+    pub name: S,
     pub is_extern: bool,
-    pub args: Vec<Arg<'a>>,
+    pub items: Vec<Arg<S>>,
 }
 
-impl<'a> ArgsDef<'a> {
-    fn new(name: Span<'a>, is_extern: bool, args: Vec<Arg<'a>>) -> Self {
+impl Args<Span<'_>> {
+    fn convert(self) -> Args {
+        Args {
+            name: self.name.to_string(),
+            is_extern: self.is_extern,
+            items: self.items.into_iter().map(|i| i.convert()).collect(),
+        }
+    }
+}
+
+impl From<&parse::ArgsDef<'_>> for Args {
+    fn from(value: &parse::ArgsDef<'_>) -> Self {
+        Self {
+            name: value.name.to_string(),
+            is_extern: value.is_extern,
+            items: value.args.iter().map(Arg::from).collect(),
+        }
+    }
+}
+
+impl<'a> From<&parse::ArgsDef<'a>> for Args<Span<'a>> {
+    fn from(value: &parse::ArgsDef<'a>) -> Self {
+        Self {
+            name: value.name,
+            is_extern: value.is_extern,
+            items: value.args.iter().map(Arg::from).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ValueKind<S = String> {
+    Set(Args<S>),
+    Field(Field<S>),
+    Const(i64),
+}
+
+impl ValueKind<Span<'_>> {
+    fn convert(self) -> ValueKind {
+        match self {
+            Self::Set(args) => ValueKind::Set(args.convert()),
+            Self::Field(field) => ValueKind::Field(field.convert()),
+            Self::Const(value) => ValueKind::Const(value),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Value<S = String> {
+    pub name: S,
+    pub kind: ValueKind<S>,
+}
+
+impl<S> Value<S> {
+    fn new_set(name: S, args: Args<S>) -> Self {
         Self {
             name,
-            is_extern,
-            args,
+            kind: ValueKind::Set(args),
+        }
+    }
+
+    fn new_field(name: S, field: Field<S>) -> Self {
+        Self {
+            name,
+            kind: ValueKind::Field(field),
+        }
+    }
+
+    fn new_const(name: S, value: i64) -> Self {
+        Self {
+            name,
+            kind: ValueKind::Const(value),
+        }
+    }
+
+    pub fn is_set(&self) -> bool {
+        matches!(self.kind, ValueKind::Set(..))
+    }
+
+    pub fn is_field(&self) -> bool {
+        matches!(self.kind, ValueKind::Field(..))
+    }
+
+    pub fn is_const(&self) -> bool {
+        matches!(self.kind, ValueKind::Const(..))
+    }
+}
+
+impl Value<Span<'_>> {
+    fn convert(self) -> Value {
+        Value {
+            name: self.name.to_string(),
+            kind: self.kind.convert(),
         }
     }
 }
 
-fn args_def(s: Span) -> IResult<ArgsDef> {
-    let (s, name) = args_name(s)?;
-    let (s, args) = many0(preceded(sp1, arg))(s)?;
-    let (s, is_extern) = is_extern(s)?;
-    Ok((s, ArgsDef::new(name, is_extern, args)))
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cond {
+    pub invert: bool,
+    pub name: String,
 }
 
-fn fixedbits(s: Span) -> IResult {
-    take_while1(|c: char| "01.-".contains(c))(s)
+impl From<&'_ parse::Cond<'_>> for Cond {
+    fn from(other: &parse::Cond) -> Self {
+        Cond {
+            invert: other.invert,
+            name: other.name.to_string(),
+        }
+    }
 }
 
-fn format_field(s: Span) -> IResult<NamedField> {
-    named_field(s)
+#[derive(Clone, Debug)]
+pub struct Pattern<I = DefaultInsn, S = String> {
+    pub mask: I,
+    pub opcode: I,
+    pub name: S,
+    pub args: Vec<Value<S>>,
+    pub cond: Vec<Cond>,
 }
 
-type Cond<'a> = super::Cond<Span<'a>>;
+impl<I> Pattern<I, Span<'_>> {
+    fn convert(self) -> Pattern<I> {
+        Pattern {
+            mask: self.mask,
+            opcode: self.opcode,
+            name: self.name.to_string(),
+            args: self.args.into_iter().map(|i| i.convert()).collect(),
+            cond: self.cond,
+        }
+    }
+}
 
-fn cond_item(s: Span) -> IResult<Cond> {
-    let (s, invert) = alt((value(true, char('~')), success(false)))(s)?;
-    let (s, name) = map_err(identifier, |e| {
-        if !invert {
-            e.or_kind(Expected::IdentifierOrTilde)
+impl<'a, I: Insn> Pattern<I, Span<'a>> {
+    fn args_push(&mut self, value: Value<Span<'a>>) {
+        match &value.kind {
+            ValueKind::Set(..) => self.args.push(value),
+            ValueKind::Field(..) | ValueKind::Const(..) => {
+                // fill empty slot
+                for arg in self.args.iter_mut().rev() {
+                    if let ValueKind::Set(set) = &mut arg.kind {
+                        if let Some(item) = set.items.iter_mut().find(|i| {
+                            i.value.is_none() && i.name.fragment() == value.name.fragment()
+                        }) {
+                            item.value = Some(value.kind);
+                            return;
+                        }
+                    }
+                }
+
+                // override slot in last set
+                for arg in self.args.iter_mut().rev() {
+                    if let ValueKind::Set(set) = &mut arg.kind {
+                        if let Some(item) = set
+                            .items
+                            .iter_mut()
+                            .find(|i| i.name.fragment() == value.name.fragment())
+                        {
+                            item.value = Some(value.kind);
+                            return;
+                        }
+                    }
+                }
+
+                // remove last field/const with the same name
+                if let Some(i) = self.args.iter().position(|i| {
+                    (i.is_field() || i.is_const()) && i.name.fragment() == value.name.fragment()
+                }) {
+                    self.args.remove(i);
+                }
+
+                self.args.push(value);
+            }
+        }
+    }
+
+    fn cond_push(&mut self, cond: Cond) {
+        if let Some(prev) = self.cond.iter_mut().find(|i| i.name == cond.name) {
+            prev.invert = cond.invert;
         } else {
-            e
-        }
-    })(s)?;
-    Ok((s, Cond { invert, name }))
-}
-
-fn cond_list(s: Span) -> IResult<Vec<Cond>> {
-    if let (s, Some(_)) = opt(char('?'))(s)? {
-        if let (s, Some(first)) = preceded(sp0, opt(cond_item))(s)? {
-            fold_many0(
-                preceded(sp1, cut(cond_item)),
-                || vec![first.clone()],
-                |mut vec, cond| {
-                    vec.push(cond);
-                    vec
-                },
-            )(s)
-        } else {
-            Ok((s, vec![]))
-        }
-    } else {
-        Ok((s, vec![]))
-    }
-}
-
-pub type FormatItem<'a> = PatternItem<'a>;
-
-fn format_item(s: Span) -> IResult<FormatItem> {
-    let p = alt((
-        map(fixedbits, FormatItem::FixedBits),
-        map(format_field, FormatItem::FixedField),
-        map(field_ref, FormatItem::FieldRef),
-        map(args_ref, FormatItem::ArgsRef),
-        map(const_value, FormatItem::Const),
-    ));
-    map_err(p, |e| {
-        e.or_kind(Expected::Msg("fixedbit, field, field_ref or args_ref"))
-    })(s)
-}
-
-pub type FormatDef<'a> = PatternDef<'a>;
-
-fn format_def(s: Span) -> IResult<FormatDef> {
-    let (s, name) = format_name(s)?;
-    let (s, items) = cut(many1(preceded(sp1, format_item)))(s)?;
-    let (s, cond) = preceded(sp0, cond_list)(s)?;
-    Ok((s, FormatDef::new(name, items, cond)))
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Const<'a> {
-    name: Span<'a>,
-    num: Number<'a, i64>,
-}
-
-impl<'a> Const<'a> {
-    pub fn value(&self) -> i64 {
-        self.num.value
-    }
-}
-
-fn const_value(s: Span) -> IResult<Const> {
-    map(
-        separated_pair(identifier, cut(char('=')), cut(number)),
-        |(name, num)| Const { name, num },
-    )(s)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PatternItem<'a> {
-    ArgsRef(Span<'a>),
-    FormatRef(Span<'a>),
-    FixedBits(Span<'a>),
-    FixedField(NamedField<'a>),
-    FieldRef(FieldRef<'a>),
-    Const(Const<'a>),
-}
-
-#[cfg(test)]
-impl<'a> PatternItem<'a> {
-    fn fixed_bits(value: Span<'a>) -> Self {
-        Self::FixedBits(value)
-    }
-
-    fn format_ref(name: Span<'a>) -> Self {
-        Self::FormatRef(name)
-    }
-
-    fn args_ref(name: Span<'a>) -> Self {
-        Self::ArgsRef(name)
-    }
-
-    fn field(name: Span<'a>, len: Number<'a, u32>, sxt: bool) -> Self {
-        Self::FixedField(NamedField { name, len, sxt })
-    }
-
-    fn field_ref(name: Span<'a>, field: Span<'a>) -> Self {
-        Self::FieldRef(FieldRef { name, field })
-    }
-
-    fn const_val(name: Span<'a>, num: Number<'a, i64>) -> Self {
-        Self::Const(Const { name, num })
-    }
-}
-
-fn pattern_item(s: Span) -> IResult<PatternItem> {
-    let p = alt((
-        map(args_ref, PatternItem::ArgsRef),
-        map(format_ref, PatternItem::FormatRef),
-        map(fixedbits, PatternItem::FixedBits),
-        map(format_field, PatternItem::FixedField),
-        map(field_ref, PatternItem::FieldRef),
-        map(const_value, PatternItem::Const),
-    ));
-    map_err(p, |e| {
-        e.or_kind(Expected::Msg(
-            "fixedbit, field, field_ref, args_ref, format_ref or const_value",
-        ))
-    })(s)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PatternDef<'a> {
-    pub name: Span<'a>,
-    pub items: Vec<PatternItem<'a>>,
-    cond: Vec<Cond<'a>>,
-}
-
-impl<'a> PatternDef<'a> {
-    fn new(name: Span<'a>, items: Vec<PatternItem<'a>>, cond: Vec<Cond<'a>>) -> Self {
-        Self { name, items, cond }
-    }
-}
-
-fn pattern_def(s: Span) -> IResult<PatternDef> {
-    let (s, name) = identifier(s)?;
-    let (s, items) = cut(many1(preceded(sp1, pattern_item)))(s)?;
-    let (s, cond) = preceded(sp0, cond_list)(s)?;
-    Ok((s, PatternDef::new(name, items, cond)))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum GroupItem<'a> {
-    PatternDef(PatternDef<'a>),
-    Group(Box<Group<'a>>),
-}
-
-fn group_item(s: Span) -> IResult<GroupItem> {
-    delimited(
-        whitespace0,
-        alt((
-            map(pattern_def, GroupItem::PatternDef),
-            map(group, |g| GroupItem::Group(Box::new(g))),
-        )),
-        eol,
-    )(s)
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Group<'a> {
-    pub overlap: bool,
-    pub items: Vec<GroupItem<'a>>,
-}
-
-impl<'a> Group<'a> {
-    fn push_item(&mut self, item: GroupItem<'a>) {
-        match item {
-            GroupItem::PatternDef(..) => self.items.push(item),
-            GroupItem::Group(group) => self.push_group(group),
-        }
-    }
-
-    fn push_group(&mut self, other: Box<Group<'a>>) {
-        if other.items.is_empty() {
-            return;
-        }
-        if self.overlap == other.overlap {
-            self.items.extend_from_slice(&other.items);
-        } else {
-            self.items.push(GroupItem::Group(other));
+            self.cond.push(Cond {
+                invert: cond.invert,
+                name: cond.name.to_string(),
+            })
         }
     }
 }
 
-fn group_delimited<'a>(
-    open: char,
-    close: char,
-    overlap: bool,
-) -> impl FnMut(Span<'a>) -> IResult<'a, Group<'a>> {
-    delimited(
-        preceded(whitespace0, char(open)),
-        cut(fold_many0(
-            group_item,
-            move || Group {
-                overlap,
-                items: vec![],
-            },
-            |mut group, item| {
-                group.push_item(item);
-                group
-            },
-        )),
-        preceded(whitespace0, cut(char(close))),
-    )
+#[derive(Clone, Debug)]
+pub enum OverlapItem<I = DefaultInsn, S = String> {
+    Pattern(Pattern<I, S>),
+    Group(Box<Group<I, S>>),
 }
 
-fn group(s: Span) -> IResult<Group> {
-    alt((
-        group_delimited('{', '}', true),
-        group_delimited('[', ']', false),
-    ))(s)
+impl<I> OverlapItem<I, Span<'_>> {
+    fn convert(self) -> OverlapItem<I> {
+        match self {
+            Self::Pattern(pattern) => OverlapItem::Pattern(pattern.convert()),
+            Self::Group(group) => OverlapItem::Group(Box::new(group.convert())),
+        }
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Stmt<'a> {
-    FieldDef(FieldDef<'a>),
-    ArgsDef(ArgsDef<'a>),
-    FormatDef(FormatDef<'a>),
-    PatternDef(PatternDef<'a>),
-    Group(Group<'a>),
+impl<I, S> OverlapItem<I, S> {
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        match self {
+            OverlapItem::Pattern(pattern) => pattern,
+            OverlapItem::Group(group) => group.first_pattern(),
+        }
+    }
 }
 
-fn stmt(s: Span) -> IResult<Stmt> {
-    delimited(
-        whitespace0,
-        alt((
-            map(field_def, Stmt::FieldDef),
-            map(args_def, Stmt::ArgsDef),
-            map(format_def, Stmt::FormatDef),
-            map(pattern_def, Stmt::PatternDef),
-            map(group, Stmt::Group),
-        )),
-        eol,
-    )(s)
+#[derive(Clone, Debug, Default)]
+pub struct Overlap<I = DefaultInsn, S = String> {
+    pub mask: I,
+    pub opcode: I,
+    pub items: Vec<OverlapItem<I, S>>,
+}
+
+impl<I> Overlap<I, Span<'_>> {
+    fn convert(self) -> Overlap<I> {
+        Overlap {
+            mask: self.mask,
+            opcode: self.opcode,
+            items: self.items.into_iter().map(|i| i.convert()).collect(),
+        }
+    }
+}
+
+impl<I, S> Overlap<I, S> {
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        self.items
+            .first()
+            .expect("group must not be empty")
+            .first_pattern()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Group<I = DefaultInsn, S = String> {
+    pub mask: I,
+    pub items: Vec<Item<I, S>>,
+}
+
+impl<I> Group<I, Span<'_>> {
+    fn convert(self) -> Group<I> {
+        Group {
+            mask: self.mask,
+            items: self.items.into_iter().map(|i| i.convert()).collect(),
+        }
+    }
+}
+
+impl<I, S> Group<I, S> {
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        self.items
+            .first()
+            .expect("group must not be empty")
+            .first_pattern()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Item<I, S = String> {
+    Pattern(Pattern<I, S>),
+    Overlap(Box<Overlap<I, S>>),
+}
+
+impl<I: Copy, S> Item<I, S> {
+    pub fn opcode(&self) -> I {
+        match self {
+            Self::Pattern(i) => i.opcode,
+            Self::Overlap(i) => i.opcode,
+        }
+    }
+
+    pub fn mask(&self) -> I {
+        match self {
+            Self::Pattern(i) => i.mask,
+            Self::Overlap(i) => i.mask,
+        }
+    }
+}
+
+impl<I, S> Item<I, S> {
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        match self {
+            Self::Pattern(pattern) => pattern,
+            Self::Overlap(overlap) => overlap.first_pattern(),
+        }
+    }
+}
+
+impl<I> Item<I, Span<'_>> {
+    fn convert(self) -> Item<I> {
+        match self {
+            Self::Pattern(pattern) => Item::Pattern(pattern.convert()),
+            Self::Overlap(group) => Item::Overlap(Box::new(group.convert())),
+        }
+    }
 }
 
 pub struct Parser<'a, T = super::DefaultInsn> {
     src: &'a str,
     insn_size: u32,
     is_fixed_insn: bool,
-    fields: HashMap<&'a str, super::Field<Span<'a>>>,
-    args: HashMap<&'a str, super::Args<Span<'a>>>,
-    formats: HashMap<&'a str, super::Pattern<T, Span<'a>>>,
-    root: Group<'a>,
+    fields: HashMap<&'a str, Field<Span<'a>>>,
+    args: HashMap<&'a str, Args<Span<'a>>>,
+    formats: HashMap<&'a str, Pattern<T, Span<'a>>>,
+    root: parse::Group<'a>,
     errors: Errors<'a>,
-}
-
-fn args_push<'a>(args: &mut Vec<super::Value<Span<'a>>>, value: super::Value<Span<'a>>) {
-    use super::ValueKind;
-
-    match &value.kind {
-        ValueKind::Set(..) => args.push(value),
-        ValueKind::Field(..) | ValueKind::Const(..) => {
-            // fill empty slot
-            for arg in args.iter_mut().rev() {
-                if let ValueKind::Set(set) = &mut arg.kind {
-                    if let Some(item) = set
-                        .items
-                        .iter_mut()
-                        .find(|i| i.value.is_none() && i.name.fragment() == value.name.fragment())
-                    {
-                        item.value = Some(value.kind);
-                        return;
-                    }
-                }
-            }
-
-            // override slot in last set
-            for arg in args.iter_mut().rev() {
-                if let ValueKind::Set(set) = &mut arg.kind {
-                    if let Some(item) = set
-                        .items
-                        .iter_mut()
-                        .find(|i| i.name.fragment() == value.name.fragment())
-                    {
-                        item.value = Some(value.kind);
-                        return;
-                    }
-                }
-            }
-
-            // remove last field/const with the same name
-            if let Some(i) = args.iter().position(|i| {
-                (i.is_field() || i.is_const()) && i.name.fragment() == value.name.fragment()
-            }) {
-                args.remove(i);
-            }
-
-            args.push(value);
-        }
-    }
-}
-
-fn cond_push<'a>(list: &mut Vec<Cond<'a>>, cond: &Cond<'a>) {
-    if let Some(prev) = list
-        .iter_mut()
-        .find(|i| i.name.fragment() == cond.name.fragment())
-    {
-        prev.invert = cond.invert;
-    } else {
-        list.push(cond.clone());
-    }
 }
 
 impl<'a, I> Parser<'a, I>
@@ -751,7 +442,7 @@ where
         self
     }
 
-    fn check_field_range(&mut self, pos: Number<'a, u32>, len: Number<'a, u32>) {
+    fn check_field_range(&mut self, pos: parse::Number<'a, u32>, len: parse::Number<'a, u32>) {
         if len.value == 0 {
             self.errors.push(len.span, ErrorKind::FieldLenZero);
         }
@@ -763,23 +454,25 @@ where
         }
     }
 
-    fn add_field_def(&mut self, def: FieldDef<'a>) {
+    fn add_field_def(&mut self, def: parse::FieldDef<'a>) {
+        use parse::Field as E;
+
         let mut items = Vec::with_capacity(def.items.len());
 
         for i in &def.items {
             match i {
-                Field::Unnamed(field) => {
+                E::Unnamed(field) => {
                     self.check_field_range(field.pos, field.len);
-                    let item = super::FieldItem::Field {
+                    let item = FieldItem::Field {
                         pos: field.pos(),
                         len: field.len(),
                         sxt: field.sign_extend(),
                     };
                     items.push(item);
                 }
-                Field::Named(r) => {
+                E::Named(r) => {
                     if let Some(field) = self.fields.get(r.name.fragment()) {
-                        let item = super::FieldItem::FieldRef {
+                        let item = FieldItem::FieldRef {
                             field: field.clone(),
                             len: r.len(),
                             sxt: r.sign_extend(),
@@ -794,7 +487,7 @@ where
 
         match self.fields.entry(def.name.fragment()) {
             Entry::Vacant(e) => {
-                let field = super::Field {
+                let field = Field {
                     name: Some(def.name),
                     func: def.func,
                     items,
@@ -809,7 +502,7 @@ where
         }
     }
 
-    fn add_args_def(&mut self, def: ArgsDef<'a>) {
+    fn add_args_def(&mut self, def: parse::ArgsDef<'a>) {
         match self.args.entry(def.name.fragment()) {
             Entry::Vacant(e) => {
                 e.insert((&def).into());
@@ -822,46 +515,48 @@ where
 
     fn create_pattern(
         &mut self,
-        def: &PatternDef<'a>,
+        def: &parse::PatternDef<'a>,
         is_format: bool,
-    ) -> super::Pattern<I, Span<'a>> {
-        use super::{Field, FieldItem, Value, ValueKind};
-        use PatternItem as E;
+    ) -> Pattern<I, Span<'a>> {
+        use parse::PatternItem as E;
 
-        let mut mask = I::zero();
-        let mut opcode = I::zero();
-        let mut args = vec![];
-        let mut cond = vec![];
+        let mut pat = Pattern {
+            mask: I::zero(),
+            opcode: I::zero(),
+            name: def.name,
+            args: vec![],
+            cond: vec![],
+        };
 
         for i in def.items.iter() {
             match i {
                 E::FixedBits(..) | E::FixedField(..) => {}
                 E::ArgsRef(i) => {
                     if let Some(r) = self.args.get(i.fragment()) {
-                        args_push(&mut args, Value::new_set(*i, r.clone()));
+                        pat.args_push(Value::new_set(*i, r.clone()));
                     } else {
                         self.errors.undefined(*i, Token::Args);
                     }
                 }
                 E::FieldRef(i) => {
                     if let Some(field) = self.fields.get(i.field.fragment()) {
-                        args_push(&mut args, Value::new_field(i.name, field.clone()));
+                        pat.args_push(Value::new_field(i.name, field.clone()));
                     } else {
                         self.errors.undefined(i.field, Token::Field);
                     }
                 }
                 E::Const(i) => {
-                    args_push(&mut args, Value::new_const(i.name, i.value()));
+                    pat.args_push(Value::new_const(i.name, i.value()));
                 }
                 E::FormatRef(r) => {
                     if let Some(format) = self.formats.get(r.fragment()) {
-                        mask = mask.bit_or(&format.mask);
-                        opcode = opcode.bit_or(&format.opcode);
+                        pat.mask = pat.mask.bit_or(&format.mask);
+                        pat.opcode = pat.opcode.bit_or(&format.opcode);
                         for i in &format.args {
-                            args_push(&mut args, i.clone());
+                            pat.args_push(i.clone());
                         }
                         for i in &format.cond {
-                            cond_push(&mut cond, i);
+                            pat.cond_push(i.clone());
                         }
                     } else {
                         self.errors.undefined(*r, Token::Format);
@@ -875,8 +570,8 @@ where
             match i {
                 E::FixedBits(i) => {
                     for c in i.chars().rev() {
-                        mask.set_bit(pos, c == '0' || c == '1');
-                        opcode.set_bit(pos, c == '1');
+                        pat.mask.set_bit(pos, c == '0' || c == '1');
+                        pat.opcode.set_bit(pos, c == '1');
                         pos += 1;
                     }
                 }
@@ -890,7 +585,7 @@ where
                             sxt: i.sign_extend(),
                         }],
                     };
-                    args_push(&mut args, Value::new_field(i.name, field));
+                    pat.args_push(Value::new_field(i.name, field));
                     pos += i.len();
                 }
                 _ => {}
@@ -904,7 +599,7 @@ where
         }
 
         if !is_format {
-            for arg in &args {
+            for arg in &pat.args {
                 if let ValueKind::Set(ref set) = arg.kind {
                     for i in set.items.iter().filter(|i| i.value.is_none()) {
                         self.errors
@@ -915,19 +610,13 @@ where
         }
 
         for i in &def.cond {
-            cond_push(&mut cond, i);
+            pat.cond_push(i.into());
         }
 
-        super::Pattern {
-            name: def.name,
-            mask,
-            opcode,
-            args,
-            cond,
-        }
+        pat
     }
 
-    fn add_format_def(&mut self, def: FormatDef<'a>) {
+    fn add_format_def(&mut self, def: parse::FormatDef<'a>) {
         let pattern = self.create_pattern(&def, true);
         match self.formats.entry(def.name.fragment()) {
             Entry::Vacant(e) => {
@@ -939,17 +628,16 @@ where
         }
     }
 
-    fn add_pattern_def(&mut self, def: PatternDef<'a>) {
-        self.root.items.push(GroupItem::PatternDef(def));
+    fn add_pattern_def(&mut self, def: parse::PatternDef<'a>) {
+        self.root.items.push(parse::GroupItem::PatternDef(def));
     }
 
-    fn add_group(&mut self, group: Group<'a>) {
+    fn add_group(&mut self, group: parse::Group<'a>) {
         self.root.push_group(Box::new(group));
     }
 
-    fn create_overlap_group(&mut self, group: &Group<'a>) -> super::Overlap<I, Span<'a>> {
-        use super::OverlapItem;
-        use GroupItem as E;
+    fn create_overlap_group(&mut self, group: &parse::Group<'a>) -> Overlap<I, Span<'a>> {
+        use parse::GroupItem as E;
 
         assert!(group.overlap);
 
@@ -1015,16 +703,15 @@ where
 
         opcode = opcode.bit_and(&mask);
 
-        super::Overlap {
+        Overlap {
             mask,
             opcode,
             items,
         }
     }
 
-    fn create_group(&mut self, group: &Group<'a>) -> super::Group<I, Span<'a>> {
-        use super::Item;
-        use GroupItem as E;
+    fn create_group(&mut self, group: &parse::Group<'a>) -> Group<I, Span<'a>> {
+        use parse::GroupItem as E;
 
         assert!(!group.overlap);
 
@@ -1058,14 +745,15 @@ where
             }
         }
 
-        super::Group { mask, items }
+        Group { mask, items }
     }
 
     pub fn parse(mut self) -> Result<DecodeTree<I>, Errors<'a>> {
-        let mut cur = Span::new(self.src);
+        use parse::Stmt;
 
+        let mut cur = Span::new(self.src);
         while !cur.is_empty() {
-            match stmt(cur).finish() {
+            match parse::stmt(cur).finish() {
                 Ok((tail, stmt)) => {
                     match stmt {
                         Stmt::FieldDef(def) => self.add_field_def(def),
@@ -1105,102 +793,5 @@ where
         } else {
             Err(self.errors)
         }
-    }
-}
-
-#[cfg(test)]
-#[rustfmt::skip]
-#[allow(clippy::int_plus_one)]
-mod tests {
-    use super::*;
-
-    /// Helper macro to define a span within the slice
-    macro_rules! span {
-        ($src:ident[$offset:expr; $len:expr]) => ({
-            assert!($offset + $len <= $src.len());
-            let line = $src.lines().count() as u32;
-            unsafe { Span::new_from_raw_offset($offset, line, &$src[$offset..$offset + $len], ()) }
-        });
-    }
-
-    /// Helper macro to define a span within the slice and parse it as a number
-    macro_rules! num {
-        ($src:ident[$offset:expr; $len:expr]) => ({
-            let s = span!($src[$offset; $len]);
-            Number::new(s.parse().unwrap(), s)
-        });
-    }
-
-    #[test]
-    fn parse_field_def() {
-        let s = "%name 10:5 20:s12 !function=func";
-        assert_eq!(Ok((
-            span!(s[32; 0]),
-            FieldDef {
-                name: span!(s[1; 4]),
-                func: Some(span!(s[28; 4])),
-                items: vec![
-                    Field::new_unnamed(num!(s[6; 2]), num!(s[9; 1]), false),
-                    Field::new_unnamed(num!(s[11; 2]), num!(s[15; 2]), true),
-                ],
-            },
-        )), field_def(s.into()));
-    }
-
-    #[test]
-    fn parse_args_def() {
-        let s = "&name foo foo:bar !extern";
-        assert_eq!(Ok((
-            span!(s[25; 0]),
-            ArgsDef {
-                name: span!(s[1; 4]),
-                is_extern: true,
-                args: vec![
-                    Arg::new(span!(s[6; 3]), None),
-                    Arg::new(span!(s[10; 3]), Some(span!(s[14; 3]))),
-                ],
-            }
-        )), args_def(s.into()));
-    }
-
-    #[test]
-    fn parse_format_def() {
-        let s = "@name 01.- a:s4 %b c=%d &args f=13";
-        assert_eq!(Ok((
-            span!(s[34; 0]),
-            FormatDef {
-                name: span!(s[1; 4]),
-                items: vec![
-                    FormatItem::fixed_bits(span!(s[6; 4])),
-                    FormatItem::field(span!(s[11; 1]), num!(s[14; 1]), true),
-                    FormatItem::field_ref(span!(s[17; 1]), span!(s[17; 1])),
-                    FormatItem::field_ref(span!(s[19; 1]), span!(s[22; 1])),
-                    FormatItem::args_ref(span!(s[25; 4])),
-                    FormatItem::const_val(span!(s[30; 1]), num!(s[32; 2])),
-                ],
-                cond: vec![],
-            }
-        )), format_def(s.into()));
-    }
-
-    #[test]
-    fn parse_pattern_def() {
-        let s = "name 01.- a:s4 %b c=%d &args @e f=13";
-        assert_eq!(Ok((
-            span!(s[36; 0]),
-            PatternDef {
-                name: span!(s[0; 4]),
-                items: vec![
-                    PatternItem::fixed_bits(span!(s[5; 4])),
-                    PatternItem::field(span!(s[10; 1]), num!(s[13; 1]), true),
-                    PatternItem::field_ref(span!(s[16; 1]), span!(s[16; 1])),
-                    PatternItem::field_ref(span!(s[18; 1]), span!(s[21; 1])),
-                    PatternItem::args_ref(span!(s[24; 4])),
-                    PatternItem::format_ref(span!(s[30; 1])),
-                    PatternItem::const_val(span!(s[32; 1]), num!(s[34; 2])),
-                ],
-                cond: vec![],
-            }
-        )), pattern_def(s.into()));
     }
 }

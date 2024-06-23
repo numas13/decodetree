@@ -79,11 +79,11 @@ where
     }
     let mut out = BufWriter::new(File::create(out).unwrap());
 
-    Generator::<T, Helper>::builder()
+    Generator::<T, _, Helper>::builder()
         .trait_name(trait_name)
         .stubs(true)
         .build(&tree, Helper::default())
-        .gen(&mut out)
+        .generate(&mut out)
         .unwrap();
 }
 

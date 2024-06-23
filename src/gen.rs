@@ -2,7 +2,9 @@ use std::{
     cmp::Ord,
     collections::{HashMap, HashSet},
     fmt,
+    hash::Hash,
     io::{self, Write},
+    ops::Deref,
 };
 
 use crate::{
@@ -34,7 +36,7 @@ impl fmt::Display for Pad {
 }
 
 #[allow(unused_variables)]
-pub trait Gen<T> {
+pub trait Gen<T, S = String> {
     fn pass_arg(&self, name: &str) -> bool {
         true
     }
@@ -47,7 +49,7 @@ pub trait Gen<T> {
         &mut self,
         out: &mut W,
         pad: Pad,
-        pattern: &Pattern<T>,
+        pattern: &Pattern<T, S>,
     ) -> io::Result<bool> {
         Ok(false)
     }
@@ -56,7 +58,7 @@ pub trait Gen<T> {
         &mut self,
         out: &mut W,
         pad: Pad,
-        pattern: &Pattern<T>,
+        pattern: &Pattern<T, S>,
     ) -> io::Result<()> {
         Ok(())
     }
@@ -127,10 +129,10 @@ impl GeneratorBuilder {
         self
     }
 
-    pub fn build<T, G>(self, tree: &DecodeTree<T>, gen: G) -> Generator<T, G>
+    pub fn build<T, S, G>(self, tree: &DecodeTree<T, S>, gen: G) -> Generator<T, S, G>
     where
         T: Insn,
-        G: Gen<T>,
+        G: Gen<T, S>,
     {
         Generator {
             trait_name: self.trait_name,
@@ -146,22 +148,23 @@ impl GeneratorBuilder {
     }
 }
 
-pub struct Generator<'a, T, G = ()> {
+pub struct Generator<'a, T, S = String, G = ()> {
     trait_name: String,
     type_name: String,
     zextract: String,
     sextract: String,
     stubs: bool,
     gen: G,
-    tree: &'a DecodeTree<T>,
+    tree: &'a DecodeTree<T, S>,
     opcodes: HashSet<&'a str>,
     conditions: HashSet<&'a str>,
 }
 
-impl<'a, T, G> Generator<'a, T, G>
+impl<'a, T, S: 'a, G> Generator<'a, T, S, G>
 where
     T: Insn,
-    G: Gen<T>,
+    S: Eq + Hash + fmt::Display + Deref<Target = str>,
+    G: Gen<T, S>,
 {
     pub fn builder() -> GeneratorBuilder {
         GeneratorBuilder::default()
@@ -179,9 +182,9 @@ where
         &mut self,
         out: &mut W,
         pad: Pad,
-        pattern: &'a Pattern<T>,
+        pattern: &'a Pattern<T, S>,
     ) -> io::Result<()> {
-        if self.opcodes.contains(pattern.name.as_str()) {
+        if self.opcodes.contains(&*pattern.name) {
             return Ok(());
         }
 
@@ -195,7 +198,11 @@ where
         for (name, ty) in self.gen.additional_args() {
             write!(out, ", {name}: {ty}")?;
         }
-        for value in pattern.args.iter().filter(|i| self.gen.pass_arg(i.name())) {
+        for value in pattern
+            .args
+            .iter()
+            .filter(|i| self.gen.pass_arg(i.name().as_ref()))
+        {
             let name = value.name();
             write!(out, ", {name}: ")?;
             match value.kind() {
@@ -224,7 +231,7 @@ where
         &mut self,
         out: &mut W,
         pad: Pad,
-        item: &'a OverlapItem<T>,
+        item: &'a OverlapItem<T, S>,
     ) -> io::Result<()> {
         match &item {
             OverlapItem::Pattern(p) => {
@@ -241,7 +248,7 @@ where
         &mut self,
         out: &mut W,
         pad: Pad,
-        group: &'a Overlap<T>,
+        group: &'a Overlap<T, S>,
     ) -> io::Result<()> {
         for i in &group.items {
             self.gen_trans_proto_overlap_item(out, pad, i)?;
@@ -253,7 +260,7 @@ where
         &mut self,
         out: &mut W,
         pad: Pad,
-        item: &'a Item<T>,
+        item: &'a Item<T, S>,
     ) -> io::Result<()> {
         match &item {
             Item::Pattern(p) => {
@@ -270,7 +277,7 @@ where
         &mut self,
         out: &mut W,
         pad: Pad,
-        group: &'a Group<T>,
+        group: &'a Group<T, S>,
     ) -> io::Result<()> {
         for i in &group.items {
             self.gen_trans_proto_group_item(out, pad, i)?;
@@ -332,7 +339,7 @@ where
     fn gen_extract_field_body<W: Write>(
         &self,
         out: &mut W,
-        field: &FieldDef,
+        field: &FieldDef<S>,
         pad: Pad,
     ) -> io::Result<()> {
         if field.items.len() == 1 {
@@ -415,7 +422,7 @@ where
         Ok(())
     }
 
-    fn gen_extract_field<W: Write>(&self, out: &mut W, field: &Field) -> io::Result<()> {
+    fn gen_extract_field<W: Write>(&self, out: &mut W, field: &Field<S>) -> io::Result<()> {
         match field {
             Field::FieldRef(field) => {
                 let name = field.name();
@@ -440,13 +447,13 @@ where
         out: &mut W,
         pad: Pad,
         name: &str,
-        items: &[ArgsValue],
+        items: &[ArgsValue<S>],
     ) -> io::Result<()> {
         writeln!(out, "{pad}let {name} = args_{name} {{")?;
         let p = pad.shift();
         for arg in items {
             write!(out, "{p}{}: ", arg.name)?;
-            match &arg.kind {
+            match arg.kind() {
                 ArgsValueKind::Field(f) => self.gen_extract_field(out, f)?,
                 ArgsValueKind::Const(v) => write!(out, "{v}")?,
             }
@@ -459,7 +466,12 @@ where
         Ok(())
     }
 
-    fn gen_extract_args<W: Write>(&self, out: &mut W, i: &Pattern<T>, pad: Pad) -> io::Result<()> {
+    fn gen_extract_args<W: Write>(
+        &self,
+        out: &mut W,
+        i: &Pattern<T, S>,
+        pad: Pad,
+    ) -> io::Result<()> {
         for arg in i.args.iter().filter(|i| self.gen.pass_arg(i.name())) {
             let name = arg.name();
             match arg.kind() {
@@ -483,7 +495,7 @@ where
         &mut self,
         out: &mut W,
         pad: Pad,
-        pattern: &Pattern<T>,
+        pattern: &Pattern<T, S>,
     ) -> io::Result<()> {
         self.gen_extract_args(out, pattern, pad)?;
         write!(out, "{pad}if Self::trans_{}(self", pattern.name)?;
@@ -503,13 +515,13 @@ where
     fn gen_decode_group_items<W: Write>(
         &mut self,
         out: &mut W,
-        items: Vec<&Item<T>>,
+        items: Vec<&Item<T, S>>,
         pad: Pad,
         prev: T,
     ) -> io::Result<()> {
         let root_mask = items
             .iter()
-            .fold(T::ones(), |mask, i| mask.bit_and(&i.mask()))
+            .fold(T::ones(), |mask, i| mask.bit_and(i.mask()))
             .bit_andn(&prev);
         let next_mask = prev.bit_or(&root_mask);
 
@@ -587,7 +599,7 @@ where
         &mut self,
         out: &mut W,
         pad: Pad,
-        group: &Overlap<T>,
+        group: &Overlap<T, S>,
         prev: T,
     ) -> io::Result<()> {
         writeln!(out, "{pad}// overlap group",)?;
@@ -618,7 +630,7 @@ where
         &mut self,
         out: &mut W,
         pad: Pad,
-        group: &Group<T>,
+        group: &Group<T, S>,
         prev: T,
     ) -> io::Result<()> {
         let items = group.items.iter().collect();
@@ -664,7 +676,7 @@ where
         writeln!(out, "{pad}}}")
     }
 
-    pub fn gen<W: Write>(&mut self, mut out: W) -> io::Result<()> {
+    pub fn generate<W: Write>(&mut self, mut out: W) -> io::Result<()> {
         let pad = Pad(0);
         let out = &mut out;
         self.gen_args(out, pad)?;

@@ -3,7 +3,7 @@ mod parse;
 use std::{
     collections::hash_map::{Entry, HashMap},
     mem,
-    ops::Deref,
+    rc::Rc,
     str,
 };
 
@@ -11,412 +11,69 @@ use nom::Finish;
 
 use crate::{
     error::{ErrorKind, Errors, Token},
-    parser::parse::Cond,
-    DecodeTree, DefaultInsn, Insn,
+    DecodeTree, Insn, UnnamedField,
 };
 
 pub use parse::Span;
 
-#[derive(Clone, Debug)]
-pub enum FieldItem<'src> {
-    Field {
-        pos: u32,
-        len: u32,
-        sxt: bool,
-    },
-    FieldRef {
-        field: Field<'src>,
-        len: u32,
-        sxt: bool,
-    },
-}
-
-impl FieldItem<'_> {
-    fn convert(&self) -> super::FieldItem {
-        use super::FieldItem as E;
-        match self {
-            Self::Field { pos, len, sxt } => E::field(*pos, *len, *sxt),
-            Self::FieldRef { field, len, sxt } => E::field_ref(field.to_field_def(), *len, *sxt),
-        }
-    }
-}
+type FieldItem<'a, S = Span<'a>> = super::FieldItem<S>;
+type FieldDef<'a, S = Span<'a>> = super::FieldDef<S>;
+type FieldRef<'a, S = Span<'a>> = super::FieldRef<S>;
+type Field<'a, S = Span<'a>> = super::Field<S>;
+type ArgsValueKind<'a, S = Span<'a>> = super::ArgsValueKind<S>;
+type ArgsValue<'a, S = Span<'a>> = super::ArgsValue<S>;
+type ValueKind<'a, S = Span<'a>> = super::ValueKind<S>;
+type Value<'a, S = Span<'a>> = super::Value<S>;
+type Cond<'a, S = Span<'a>> = super::Cond<S>;
+type Pattern<'a, I, S = Span<'a>> = super::Pattern<I, S>;
+type OverlapItem<'a, I, S = Span<'a>> = super::OverlapItem<I, S>;
+type Overlap<'a, I, S = Span<'a>> = super::Overlap<I, S>;
+type Item<'a, I, S = Span<'a>> = super::Item<I, S>;
+type Group<'a, I, S = Span<'a>> = super::Group<I, S>;
 
 #[derive(Clone, Debug)]
-pub struct Field<'src> {
-    pub name: Option<Span<'src>>,
-    pub func: Option<Span<'src>>,
-    pub items: Vec<FieldItem<'src>>,
+struct ArgsDef<'src> {
+    name: Span<'src>,
+    is_extern: bool,
+    items: Vec<ArgsValue<'src>>,
 }
 
-impl Field<'_> {
-    fn to_field_def(&self) -> super::FieldDef {
-        super::FieldDef {
-            name: self.name.unwrap().to_string(),
-            func: self.func.map(|s| s.to_string()),
-            items: self.items.iter().map(|i| i.convert()).collect(),
-        }
-    }
-
-    fn to_field(&self) -> super::Field {
-        if self.name.is_some() {
-            super::Field::FieldRef(self.to_field_def())
-        } else if let Some(FieldItem::Field { pos, len, sxt }) = self.items.first() {
-            super::Field::Field(super::UnnamedField {
-                pos: *pos,
-                len: *len,
-                sxt: *sxt,
-            })
-        } else {
-            panic!()
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Arg<'src> {
-    pub name: Span<'src>,
-    pub ty: Option<Span<'src>>,
-    pub value: Option<ValueKind<'src>>,
-}
-
-impl Arg<'_> {
-    fn convert(&self) -> super::ArgsValue {
-        super::ArgsValue {
-            name: self.name.to_string(),
-            ty: self.ty.map(|s| s.to_string()),
-            kind: self
-                .value
-                .as_ref()
-                .expect("parser must generate error")
-                .convert(),
-        }
-    }
-}
-
-impl<'src> From<&parse::Arg<'src>> for Arg<'src> {
-    fn from(value: &parse::Arg<'src>) -> Self {
-        Self {
-            name: value.name,
-            ty: value.ty,
-            value: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Args<'src> {
-    pub name: Span<'src>,
-    pub is_extern: bool,
-    pub items: Vec<Arg<'src>>,
-}
-
-impl Args<'_> {
-    fn as_args_def(&self) -> super::ArgsDef {
+impl<'src> ArgsDef<'src> {
+    fn to_args_def<S>(&self) -> super::ArgsDef<S>
+    where
+        S: From<&'src str>,
+    {
         super::ArgsDef {
-            name: self.name.to_string(),
+            name: S::from(&self.name),
             is_extern: self.is_extern,
             items: self
                 .items
                 .iter()
                 .map(|i| super::ArgDef {
-                    name: i.name.to_string(),
-                    ty: i.ty.map(|s| s.to_string()),
+                    name: S::from(&i.name),
+                    ty: i.ty.map(|s| S::from(&s)),
                 })
                 .collect(),
         }
     }
 }
 
-impl<'src> From<&parse::ArgsDef<'src>> for Args<'src> {
-    fn from(value: &parse::ArgsDef<'src>) -> Self {
-        Self {
-            name: value.name,
-            is_extern: value.is_extern,
-            items: value.args.iter().map(Arg::from).collect(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum ValueKind<'src> {
-    Set(Args<'src>),
-    Field(Field<'src>),
-    Const(i64),
-}
-
-impl ValueKind<'_> {
-    fn convert(&self) -> super::ArgsValueKind {
-        use super::ArgsValueKind as E;
-        match self {
-            Self::Set(_) => todo!("nested arg sets"),
-            Self::Field(field) => E::Field(field.to_field()),
-            Self::Const(value) => E::Const(*value),
-        }
-    }
-
-    fn is_field(&self) -> bool {
-        matches!(self, ValueKind::Field(..))
-    }
-
-    fn is_const(&self) -> bool {
-        matches!(self, ValueKind::Const(..))
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Value<'src> {
-    pub name: Span<'src>,
-    pub kind: ValueKind<'src>,
-}
-
-impl<'src> Value<'src> {
-    fn new_set(name: Span<'src>, args: Args<'src>) -> Self {
-        Self {
-            name,
-            kind: ValueKind::Set(args),
-        }
-    }
-
-    fn new_field(name: Span<'src>, field: Field<'src>) -> Self {
-        Self {
-            name,
-            kind: ValueKind::Field(field),
-        }
-    }
-
-    fn new_const(name: Span<'src>, value: i64) -> Self {
-        Self {
-            name,
-            kind: ValueKind::Const(value),
-        }
-    }
-
-    fn as_pattern_value(&self) -> super::Value {
-        use super::ValueKind as E;
-
-        super::Value {
-            name: self.name.to_string(),
-            kind: match &self.kind {
-                ValueKind::Set(args) => {
-                    let args = args.items.iter().map(|i| i.convert()).collect();
-                    E::Args(args)
-                }
-                ValueKind::Field(field) => E::Field(field.to_field()),
-                ValueKind::Const(value) => E::Const(*value),
-            },
-        }
-    }
-}
-
-impl<'src> Deref for Value<'src> {
-    type Target = ValueKind<'src>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.kind
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Pattern<'src, I = DefaultInsn> {
-    pub mask: I,
-    pub opcode: I,
-    pub name: Span<'src>,
-    pub args: Vec<Value<'src>>,
-    pub cond: Vec<Cond<'src>>,
-}
-
-impl<I> Pattern<'_, I> {
-    fn convert(self) -> super::Pattern<I> {
-        super::Pattern {
-            mask: self.mask,
-            opcode: self.opcode,
-            name: self.name.to_string(),
-            args: self.args.iter().map(|i| i.as_pattern_value()).collect(),
-            cond: self
-                .cond
-                .into_iter()
-                .map(|i| super::Cond {
-                    invert: i.invert,
-                    name: i.name.to_string(),
-                })
-                .collect(),
-        }
-    }
-}
-
-impl<'src, I: Insn> Pattern<'src, I> {
-    fn args_push(&mut self, value: Value<'src>) {
-        match &value.kind {
-            ValueKind::Set(..) => self.args.push(value),
-            ValueKind::Field(..) | ValueKind::Const(..) => {
-                // fill empty slot
-                for arg in self.args.iter_mut().rev() {
-                    if let ValueKind::Set(set) = &mut arg.kind {
-                        if let Some(item) = set.items.iter_mut().find(|i| {
-                            i.value.is_none() && i.name.fragment() == value.name.fragment()
-                        }) {
-                            item.value = Some(value.kind);
-                            return;
-                        }
-                    }
-                }
-
-                // override slot in last set
-                for arg in self.args.iter_mut().rev() {
-                    if let ValueKind::Set(set) = &mut arg.kind {
-                        if let Some(item) = set
-                            .items
-                            .iter_mut()
-                            .find(|i| i.name.fragment() == value.name.fragment())
-                        {
-                            item.value = Some(value.kind);
-                            return;
-                        }
-                    }
-                }
-
-                // remove last field/const with the same name
-                if let Some(i) = self.args.iter().position(|i| {
-                    (i.is_field() || i.is_const()) && i.name.fragment() == value.name.fragment()
-                }) {
-                    self.args.remove(i);
-                }
-
-                self.args.push(value);
-            }
-        }
-    }
-
-    fn cond_push(&mut self, cond: Cond<'src>) {
-        if let Some(prev) = self.cond.iter_mut().find(|i| i.name == cond.name) {
-            prev.invert = cond.invert;
-        } else {
-            self.cond.push(cond.clone());
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum OverlapItem<'src, I = DefaultInsn> {
-    Pattern(Pattern<'src, I>),
-    Group(Box<Group<'src, I>>),
-}
-
-impl<I> OverlapItem<'_, I> {
-    fn convert(self) -> super::OverlapItem<I> {
-        match self {
-            Self::Pattern(pattern) => super::OverlapItem::Pattern(pattern.convert()),
-            Self::Group(group) => super::OverlapItem::Group(Box::new(group.convert())),
-        }
-    }
-}
-
-impl<'src, I> OverlapItem<'src, I> {
-    fn first_pattern(&self) -> &Pattern<'src, I> {
-        match self {
-            OverlapItem::Pattern(pattern) => pattern,
-            OverlapItem::Group(group) => group.first_pattern(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Overlap<'src, I = DefaultInsn> {
-    pub mask: I,
-    pub opcode: I,
-    pub items: Vec<OverlapItem<'src, I>>,
-}
-
-impl<I> Overlap<'_, I> {
-    fn convert(self) -> super::Overlap<I> {
-        super::Overlap {
-            mask: self.mask,
-            opcode: self.opcode,
-            items: self.items.into_iter().map(|i| i.convert()).collect(),
-        }
-    }
-}
-
-impl<'src, I> Overlap<'src, I> {
-    fn first_pattern(&self) -> &Pattern<'src, I> {
-        self.items
-            .first()
-            .expect("group must not be empty")
-            .first_pattern()
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Group<'src, I = DefaultInsn> {
-    pub mask: I,
-    pub items: Vec<Item<'src, I>>,
-}
-
-impl<I> Group<'_, I> {
-    fn convert(self) -> super::Group<I> {
-        super::Group {
-            mask: self.mask,
-            items: self.items.into_iter().map(|i| i.convert()).collect(),
-        }
-    }
-}
-
-impl<'src, I> Group<'src, I> {
-    fn first_pattern(&self) -> &Pattern<'src, I> {
-        self.items
-            .first()
-            .expect("group must not be empty")
-            .first_pattern()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum Item<'src, I> {
-    Pattern(Pattern<'src, I>),
-    Overlap(Box<Overlap<'src, I>>),
-}
-
-impl<I: Copy> Item<'_, I> {
-    pub fn opcode(&self) -> I {
-        match self {
-            Self::Pattern(i) => i.opcode,
-            Self::Overlap(i) => i.opcode,
-        }
-    }
-}
-
-impl<'src, I> Item<'src, I> {
-    fn first_pattern(&self) -> &Pattern<'src, I> {
-        match self {
-            Self::Pattern(pattern) => pattern,
-            Self::Overlap(overlap) => overlap.first_pattern(),
-        }
-    }
-}
-
-impl<I> Item<'_, I> {
-    fn convert(self) -> super::Item<I> {
-        match self {
-            Self::Pattern(pattern) => super::Item::Pattern(pattern.convert()),
-            Self::Overlap(group) => super::Item::Overlap(Box::new(group.convert())),
-        }
-    }
-}
-
-pub struct Parser<'src, T = super::DefaultInsn> {
+pub struct Parser<'src, I = super::DefaultInsn, S = String> {
     src: &'src str,
     insn_size: u32,
     is_fixed_insn: bool,
-    fields: HashMap<&'src str, Field<'src>>,
-    args: HashMap<&'src str, Args<'src>>,
-    formats: HashMap<&'src str, Pattern<'src, T>>,
+    fields: HashMap<&'src str, Rc<FieldDef<'src>>>,
+    args: HashMap<&'src str, ArgsDef<'src>>,
+    formats: HashMap<&'src str, Pattern<'src, I>>,
     root: parse::Group<'src>,
     errors: Errors<'src>,
+    tree: DecodeTree<I, S>,
 }
 
-impl<'src, I> Parser<'src, I>
+impl<'src, I, S> Parser<'src, I, S>
 where
     I: Insn,
+    S: Default + From<&'src str>,
 {
     pub fn new(src: &'src str) -> Self {
         Self {
@@ -428,6 +85,7 @@ where
             args: Default::default(),
             formats: Default::default(),
             root: Default::default(),
+            tree: Default::default(),
         }
     }
 
@@ -462,20 +120,12 @@ where
             match i {
                 E::Unnamed(field) => {
                     self.check_field_range(field.pos, field.len);
-                    let item = FieldItem::Field {
-                        pos: field.pos(),
-                        len: field.len(),
-                        sxt: field.sign_extend(),
-                    };
+                    let item = FieldItem::field(field.pos(), field.len(), field.sign_extend());
                     items.push(item);
                 }
                 E::Named(r) => {
                     if let Some(field) = self.fields.get(r.name.fragment()) {
-                        let item = FieldItem::FieldRef {
-                            field: field.clone(),
-                            len: r.len(),
-                            sxt: r.sign_extend(),
-                        };
+                        let item = FieldItem::field_ref(field.clone(), r.len(), r.sign_extend());
                         items.push(item);
                     } else {
                         self.errors.undefined(r.name, Token::Field);
@@ -484,19 +134,20 @@ where
             };
         }
 
+        let field = FieldDef {
+            name: def.name,
+            func: def.func,
+            items,
+        };
+        let field_def = Rc::new(self.convert_field_def(&field));
+
         match self.fields.entry(def.name.fragment()) {
             Entry::Vacant(e) => {
-                let field = Field {
-                    name: Some(def.name),
-                    func: def.func,
-                    items,
-                };
-                e.insert(field);
+                e.insert(Rc::new(field));
+                self.tree.fields.insert(def.name.to_string(), field_def);
             }
             Entry::Occupied(e) => {
-                if let Some(name) = e.get().name {
-                    self.errors.redefined(Token::Field, def.name, name);
-                }
+                self.errors.redefined(Token::Field, def.name, e.get().name);
             }
         }
     }
@@ -504,7 +155,23 @@ where
     fn add_args_def(&mut self, def: parse::ArgsDef<'src>) {
         match self.args.entry(def.name.fragment()) {
             Entry::Vacant(e) => {
-                e.insert((&def).into());
+                let args = ArgsDef {
+                    name: def.name,
+                    is_extern: def.is_extern,
+                    items: def
+                        .args
+                        .iter()
+                        .map(|i| ArgsValue {
+                            name: i.name,
+                            ty: i.ty,
+                            kind: None,
+                        })
+                        .collect(),
+                };
+                let args = e.insert(args);
+                self.tree
+                    .args
+                    .insert(def.name.to_string(), args.to_args_def());
             }
             Entry::Occupied(e) => {
                 self.errors.redefined(Token::Args, def.name, e.get().name);
@@ -532,14 +199,15 @@ where
                 E::FixedBits(..) | E::FixedField(..) => {}
                 E::ArgsRef(i) => {
                     if let Some(r) = self.args.get(i.fragment()) {
-                        pat.args_push(Value::new_set(*i, r.clone()));
+                        pat.args_push(Value::new_set(*i, r.items.clone()));
                     } else {
                         self.errors.undefined(*i, Token::Args);
                     }
                 }
                 E::FieldRef(i) => {
                     if let Some(field) = self.fields.get(i.field.fragment()) {
-                        pat.args_push(Value::new_field(i.name, field.clone()));
+                        let field = Field::FieldRef(field.clone());
+                        pat.args_push(Value::new_field(i.name, field));
                     } else {
                         self.errors.undefined(i.field, Token::Field);
                     }
@@ -575,16 +243,12 @@ where
                     }
                 }
                 E::FixedField(i) => {
-                    let field = Field {
-                        name: None,
-                        func: None,
-                        items: vec![FieldItem::Field {
-                            pos,
-                            len: i.len(),
-                            sxt: i.sign_extend(),
-                        }],
+                    let field = UnnamedField {
+                        pos,
+                        len: i.len(),
+                        sxt: i.sign_extend(),
                     };
-                    pat.args_push(Value::new_field(i.name, field));
+                    pat.args_push(Value::new_field(i.name, Field::Field(field)));
                     pos += i.len();
                 }
                 _ => {}
@@ -599,8 +263,8 @@ where
 
         if !is_format {
             for arg in &pat.args {
-                if let ValueKind::Set(ref set) = arg.kind {
-                    for i in set.items.iter().filter(|i| i.value.is_none()) {
+                if let ValueKind::Args(args) = &arg.kind {
+                    for i in args.iter().filter(|i| i.kind.is_none()) {
                         self.errors
                             .push(arg.name, ErrorKind::UndefinedMember(def.name, i.name));
                     }
@@ -747,7 +411,123 @@ where
         Group { mask, items }
     }
 
-    pub fn parse(mut self) -> Result<DecodeTree<I>, Errors<'src>> {
+    fn convert_field_def(&self, field: &FieldDef<'src>) -> FieldDef<S> {
+        FieldDef {
+            name: S::from(&field.name),
+            func: field.func.map(|s| S::from(&s)),
+            items: field
+                .items
+                .iter()
+                .map(|i| self.convert_field_item(i))
+                .collect(),
+        }
+    }
+
+    fn convert_field_ref(&self, field_ref: &FieldRef<'src>) -> FieldRef<S> {
+        let name = field_ref.field.name.fragment();
+        let field = self.tree.fields.get(*name).unwrap().clone();
+        FieldRef::new(field, field_ref.len, field_ref.sxt)
+    }
+
+    fn convert_field_item(&self, item: &FieldItem<'src>) -> FieldItem<S> {
+        match item {
+            FieldItem::Field(f) => FieldItem::Field(*f),
+            FieldItem::FieldRef(f) => FieldItem::FieldRef(self.convert_field_ref(f)),
+        }
+    }
+
+    fn convert_field(&self, field: &Field<'src>) -> Field<S> {
+        match field {
+            Field::Field(unnamed) => Field::Field(*unnamed),
+            Field::FieldRef(f) => {
+                Field::FieldRef(self.tree.fields.get(*f.name.fragment()).unwrap().clone())
+            }
+        }
+    }
+
+    fn convert_args_value_kind(&self, kind: &ArgsValueKind<'src>) -> ArgsValueKind<S> {
+        match kind {
+            ArgsValueKind::Field(field) => ArgsValueKind::Field(self.convert_field(field)),
+            ArgsValueKind::Const(value) => ArgsValueKind::Const(*value),
+        }
+    }
+
+    fn convert_arg(&self, arg: &ArgsValue<'src>) -> ArgsValue<S> {
+        ArgsValue {
+            name: S::from(&arg.name),
+            ty: arg.ty.map(|s| S::from(&s)),
+            kind: arg.kind.as_ref().map(|i| self.convert_args_value_kind(i)),
+        }
+    }
+
+    fn convert_value_kind(&self, kind: &ValueKind<'src>) -> ValueKind<S> {
+        match kind {
+            ValueKind::Args(args) => {
+                ValueKind::Args(args.iter().map(|i| self.convert_arg(i)).collect())
+            }
+            ValueKind::Field(field) => ValueKind::Field(self.convert_field(field)),
+            ValueKind::Const(value) => ValueKind::Const(*value),
+        }
+    }
+
+    fn convert_value(&self, value: &Value<'src>) -> Value<S> {
+        Value {
+            name: S::from(&value.name),
+            kind: self.convert_value_kind(&value.kind),
+        }
+    }
+
+    fn convert_pattern(&self, pat: &Pattern<'src, I>) -> Pattern<I, S> {
+        Pattern {
+            mask: pat.mask,
+            opcode: pat.opcode,
+            name: S::from(&pat.name),
+            args: pat.args.iter().map(|i| self.convert_value(i)).collect(),
+            cond: pat
+                .cond
+                .iter()
+                .map(|i| Cond {
+                    invert: i.invert,
+                    name: S::from(&i.name),
+                })
+                .collect(),
+        }
+    }
+
+    fn convert_overlap_item(&self, item: &OverlapItem<'src, I>) -> OverlapItem<I, S> {
+        match item {
+            OverlapItem::Pattern(pattern) => OverlapItem::Pattern(self.convert_pattern(pattern)),
+            OverlapItem::Group(group) => OverlapItem::Group(Box::new(self.convert_group(group))),
+        }
+    }
+
+    fn convert_overlap(&self, overlap: &Overlap<'src, I>) -> Overlap<I, S> {
+        Overlap {
+            mask: overlap.mask,
+            opcode: overlap.opcode,
+            items: overlap
+                .items
+                .iter()
+                .map(|i| self.convert_overlap_item(i))
+                .collect(),
+        }
+    }
+
+    fn convert_item(&self, item: &Item<'src, I>) -> Item<I, S> {
+        match item {
+            Item::Pattern(pattern) => Item::Pattern(self.convert_pattern(pattern)),
+            Item::Overlap(group) => Item::Overlap(Box::new(self.convert_overlap(group))),
+        }
+    }
+
+    fn convert_group(&self, group: &Group<'src, I>) -> Group<I, S> {
+        Group {
+            mask: group.mask,
+            items: group.items.iter().map(|i| self.convert_item(i)).collect(),
+        }
+    }
+
+    pub fn parse(mut self) -> Result<DecodeTree<I, S>, Errors<'src>> {
         use parse::Stmt;
 
         let mut cur = Span::new(self.src);
@@ -774,21 +554,8 @@ where
         let root = self.create_group(&root);
 
         if self.errors.is_empty() {
-            let fields = self
-                .fields
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.to_field_def()))
-                .collect();
-
-            let args = self
-                .args
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.as_args_def()))
-                .collect();
-
-            let root = root.convert();
-
-            Ok(DecodeTree { fields, args, root })
+            self.tree.root = self.convert_group(&root);
+            Ok(self.tree)
         } else {
             Err(self.errors)
         }

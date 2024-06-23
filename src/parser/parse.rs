@@ -15,6 +15,8 @@ use nom_locate::LocatedSpan;
 
 use crate::error::{Error, ErrorKind, Expected};
 
+use super::Cond;
+
 type IResult<'a, T = Span<'a>, I = Span<'a>, E = Error<'a>> = nom::IResult<I, T, E>;
 
 pub type Span<'a> = LocatedSpan<&'a str>;
@@ -393,12 +395,6 @@ fn fixedbits(s: Span) -> IResult {
 
 fn format_field(s: Span) -> IResult<NamedField> {
     named_field(s)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Cond<'a> {
-    pub invert: bool,
-    pub name: Span<'a>,
 }
 
 fn cond_item(s: Span) -> IResult<Cond> {

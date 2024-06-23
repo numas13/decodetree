@@ -4,7 +4,9 @@ mod parser;
 #[cfg(feature = "gen")]
 pub mod gen;
 
-use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem};
+use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::Rc};
+
+use crate::parser::Span;
 
 pub use crate::error::{ErrorPrinter, Errors};
 pub use crate::parser::Parser;
@@ -69,7 +71,7 @@ macro_rules! impl_insn {
 
 impl_insn!(u8, u16, u32, u64, u128);
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct UnnamedField {
     pos: u32,
     len: u32,
@@ -92,14 +94,18 @@ impl UnnamedField {
 }
 
 #[derive(Clone, Debug)]
-pub struct FieldRef {
-    field: FieldDef,
+pub struct FieldRef<S = String> {
+    field: Rc<FieldDef<S>>,
     len: u32,
     sxt: bool,
 }
 
-impl FieldRef {
-    pub fn field(&self) -> &FieldDef {
+impl<S> FieldRef<S> {
+    fn new(field: Rc<FieldDef<S>>, len: u32, sxt: bool) -> Self {
+        Self { field, len, sxt }
+    }
+
+    pub fn field(&self) -> &FieldDef<S> {
         &self.field
     }
 
@@ -114,131 +120,152 @@ impl FieldRef {
 }
 
 #[derive(Clone, Debug)]
-pub enum FieldItem {
+pub enum FieldItem<S = String> {
     Field(UnnamedField),
-    FieldRef(FieldRef),
+    FieldRef(FieldRef<S>),
 }
 
-impl FieldItem {
+impl<S> FieldItem<S> {
     fn field(pos: u32, len: u32, sxt: bool) -> Self {
         Self::Field(UnnamedField { pos, len, sxt })
     }
 
-    fn field_ref(field: FieldDef, len: u32, sxt: bool) -> Self {
+    fn field_ref(field: Rc<FieldDef<S>>, len: u32, sxt: bool) -> Self {
         Self::FieldRef(FieldRef { field, len, sxt })
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct FieldDef {
-    name: String,
-    func: Option<String>,
-    items: Vec<FieldItem>,
+pub struct FieldDef<S = String> {
+    name: S,
+    func: Option<S>,
+    items: Vec<FieldItem<S>>,
 }
 
-impl FieldDef {
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+impl<S> FieldDef<S> {
+    pub fn name(&self) -> &S {
+        &self.name
     }
 
-    pub fn func(&self) -> Option<&str> {
-        self.func.as_deref()
+    pub fn func(&self) -> Option<&S> {
+        self.func.as_ref()
     }
 
-    pub fn items(&self) -> &[FieldItem] {
+    pub fn items(&self) -> &[FieldItem<S>] {
         &self.items
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct ArgDef {
-    name: String,
-    ty: Option<String>,
+pub struct ArgDef<S = String> {
+    name: S,
+    ty: Option<S>,
 }
 
-impl ArgDef {
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+impl<S> ArgDef<S> {
+    pub fn name(&self) -> &S {
+        &self.name
     }
 
-    pub fn ty(&self) -> Option<&str> {
-        self.ty.as_deref()
+    pub fn ty(&self) -> Option<&S> {
+        self.ty.as_ref()
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct ArgsDef {
-    name: String,
+pub struct ArgsDef<S = String> {
+    name: S,
     is_extern: bool,
-    items: Vec<ArgDef>,
+    items: Vec<ArgDef<S>>,
 }
 
-impl ArgsDef {
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+impl<S> ArgsDef<S> {
+    pub fn name(&self) -> &S {
+        &self.name
     }
 
     pub fn is_extern(&self) -> bool {
         self.is_extern
     }
 
-    pub fn items(&self) -> &[ArgDef] {
+    pub fn items(&self) -> &[ArgDef<S>] {
         self.items.as_slice()
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Field {
+pub enum Field<S = String> {
     Field(UnnamedField),
-    FieldRef(FieldDef),
+    FieldRef(Rc<FieldDef<S>>),
 }
 
 #[derive(Clone, Debug)]
-pub enum ArgsValueKind {
+pub enum ArgsValueKind<S = String> {
     Const(i64),
-    Field(Field),
+    Field(Field<S>),
 }
 
 #[derive(Clone, Debug)]
-pub struct ArgsValue {
-    name: String,
-    ty: Option<String>,
-    kind: ArgsValueKind,
+pub struct ArgsValue<S = String> {
+    name: S,
+    ty: Option<S>,
+    kind: Option<ArgsValueKind<S>>,
 }
 
-impl ArgsValue {
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+impl<S> ArgsValue<S> {
+    pub fn name(&self) -> &S {
+        &self.name
     }
 
-    pub fn ty(&self) -> Option<&str> {
-        self.ty.as_deref()
+    pub fn ty(&self) -> Option<&S> {
+        self.ty.as_ref()
     }
 
-    pub fn kind(&self) -> &ArgsValueKind {
-        &self.kind
+    pub fn kind(&self) -> &ArgsValueKind<S> {
+        self.kind.as_ref().expect("handled by parser")
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum ValueKind {
+pub enum ValueKind<S = String> {
     Const(i64),
-    Field(Field),
-    Args(Vec<ArgsValue>),
+    Field(Field<S>),
+    Args(Vec<ArgsValue<S>>),
 }
 
 #[derive(Clone, Debug)]
-pub struct Value {
-    name: String,
-    kind: ValueKind,
+pub struct Value<S = String> {
+    name: S,
+    kind: ValueKind<S>,
 }
 
-impl Value {
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+impl<S> Value<S> {
+    pub fn name(&self) -> &S {
+        &self.name
     }
 
-    pub fn kind(&self) -> &ValueKind {
+    fn new_const(name: S, value: i64) -> Self {
+        Self {
+            name,
+            kind: ValueKind::Const(value),
+        }
+    }
+
+    fn new_field(name: S, field: Field<S>) -> Self {
+        Self {
+            name,
+            kind: ValueKind::Field(field),
+        }
+    }
+
+    fn new_set(name: S, args: Vec<ArgsValue<S>>) -> Self {
+        Self {
+            name,
+            kind: ValueKind::Args(args),
+        }
+    }
+
+    pub fn kind(&self) -> &ValueKind<S> {
         &self.kind
     }
 
@@ -255,15 +282,23 @@ impl Value {
     }
 }
 
+impl<S> Deref for Value<S> {
+    type Target = ValueKind<S>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.kind
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Cond {
-    name: String,
+pub struct Cond<S = String> {
+    name: S,
     invert: bool,
 }
 
-impl Cond {
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+impl<S> Cond<S> {
+    pub fn name(&self) -> &S {
+        &self.name
     }
 
     pub fn invert(&self) -> bool {
@@ -272,17 +307,17 @@ impl Cond {
 }
 
 #[derive(Clone, Debug)]
-pub struct Pattern<I = DefaultInsn> {
-    name: String,
+pub struct Pattern<I = DefaultInsn, S = String> {
+    name: S,
     mask: I,
     opcode: I,
-    args: Vec<Value>,
-    cond: Vec<Cond>,
+    args: Vec<Value<S>>,
+    cond: Vec<Cond<S>>,
 }
 
-impl<I> Pattern<I> {
-    pub fn name(&self) -> &str {
-        self.name.as_str()
+impl<I, S> Pattern<I, S> {
+    pub fn name(&self) -> &S {
+        &self.name
     }
 
     pub fn mask(&self) -> &I {
@@ -293,29 +328,102 @@ impl<I> Pattern<I> {
         &self.opcode
     }
 
-    pub fn args(&self) -> &[Value] {
+    pub fn args(&self) -> &[Value<S>] {
         self.args.as_slice()
     }
 
-    pub fn conditions(&self) -> &[Cond] {
+    pub fn conditions(&self) -> &[Cond<S>] {
         self.cond.as_slice()
     }
 }
 
+impl<'a, I> Pattern<I, Span<'a>> {
+    fn args_push(&mut self, value: Value<Span<'a>>) {
+        fn convert(kind: ValueKind<Span>) -> ArgsValueKind<Span> {
+            match kind {
+                ValueKind::Const(value) => ArgsValueKind::Const(value),
+                ValueKind::Field(field) => ArgsValueKind::Field(field),
+                ValueKind::Args(..) => panic!("nested args set"),
+            }
+        }
+
+        match &value.kind {
+            ValueKind::Args(..) => self.args.push(value),
+            ValueKind::Field(..) | ValueKind::Const(..) => {
+                // fill empty slot
+                for arg in self.args.iter_mut().rev() {
+                    if let ValueKind::Args(args) = &mut arg.kind {
+                        if let Some(item) = args.iter_mut().find(|i| {
+                            i.kind.is_none() && i.name.fragment() == value.name.fragment()
+                        }) {
+                            item.kind = Some(convert(value.kind));
+                            return;
+                        }
+                    }
+                }
+
+                // override slot in last set
+                for arg in self.args.iter_mut().rev() {
+                    if let ValueKind::Args(args) = &mut arg.kind {
+                        if let Some(item) = args
+                            .iter_mut()
+                            .find(|i| i.name.fragment() == value.name.fragment())
+                        {
+                            item.kind = Some(convert(value.kind));
+                            return;
+                        }
+                    }
+                }
+
+                // remove last field/const with the same name
+                if let Some(i) = self.args.iter().position(|i| {
+                    (i.is_field() || i.is_const()) && i.name.fragment() == value.name.fragment()
+                }) {
+                    self.args.remove(i);
+                }
+
+                self.args.push(value);
+            }
+        }
+    }
+}
+
+impl<I, S> Pattern<I, S>
+where
+    S: Clone + Eq,
+{
+    fn cond_push(&mut self, cond: Cond<S>) {
+        if let Some(prev) = self.cond.iter_mut().find(|i| i.name == cond.name) {
+            prev.invert = cond.invert;
+        } else {
+            self.cond.push(cond.clone());
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub enum OverlapItem<I = DefaultInsn> {
-    Pattern(Pattern<I>),
-    Group(Box<Group<I>>),
+pub enum OverlapItem<I = DefaultInsn, S = String> {
+    Pattern(Pattern<I, S>),
+    Group(Box<Group<I, S>>),
+}
+
+impl<I, S> OverlapItem<I, S> {
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        match self {
+            OverlapItem::Pattern(pattern) => pattern,
+            OverlapItem::Group(group) => group.first_pattern(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Overlap<I = DefaultInsn> {
+pub struct Overlap<I = DefaultInsn, S = String> {
     mask: I,
     opcode: I,
-    items: Vec<OverlapItem<I>>,
+    items: Vec<OverlapItem<I, S>>,
 }
 
-impl<I> Overlap<I> {
+impl<I, S> Overlap<I, S> {
     pub fn mask(&self) -> &I {
         &self.mask
     }
@@ -324,54 +432,75 @@ impl<I> Overlap<I> {
         &self.opcode
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &OverlapItem<I>> {
+    pub fn iter(&self) -> impl Iterator<Item = &OverlapItem<I, S>> {
         self.items.iter()
+    }
+
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        self.items
+            .first()
+            .expect("group must not be empty")
+            .first_pattern()
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum Item<I> {
-    Pattern(Pattern<I>),
-    Overlap(Box<Overlap<I>>),
+pub enum Item<I, S = String> {
+    Pattern(Pattern<I, S>),
+    Overlap(Box<Overlap<I, S>>),
 }
 
-impl<I: Copy> Item<I> {
-    pub fn opcode(&self) -> I {
+impl<I, S> Item<I, S> {
+    pub fn opcode(&self) -> &I {
         match self {
-            Self::Pattern(i) => i.opcode,
-            Self::Overlap(i) => i.opcode,
+            Self::Pattern(i) => &i.opcode,
+            Self::Overlap(i) => &i.opcode,
         }
     }
 
-    pub fn mask(&self) -> I {
+    pub fn mask(&self) -> &I {
         match self {
-            Self::Pattern(i) => i.mask,
-            Self::Overlap(i) => i.mask,
+            Self::Pattern(i) => &i.mask,
+            Self::Overlap(i) => &i.mask,
+        }
+    }
+
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        match self {
+            Self::Pattern(pattern) => pattern,
+            Self::Overlap(overlap) => overlap.first_pattern(),
         }
     }
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Group<I = DefaultInsn> {
+pub struct Group<I = DefaultInsn, S = String> {
     mask: I,
-    items: Vec<Item<I>>,
+    items: Vec<Item<I, S>>,
 }
 
-impl<I> Group<I> {
+impl<I, S> Group<I, S> {
     pub fn mask(&self) -> &I {
         &self.mask
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Item<I>> {
+    pub fn iter(&self) -> impl Iterator<Item = &Item<I, S>> {
         self.items.iter()
+    }
+
+    fn first_pattern(&self) -> &Pattern<I, S> {
+        self.items
+            .first()
+            .expect("group must not be empty")
+            .first_pattern()
     }
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct DecodeTree<I = DefaultInsn> {
-    pub fields: HashMap<String, FieldDef>,
-    pub args: HashMap<String, ArgsDef>,
-    pub root: Group<I>,
+pub struct DecodeTree<I = DefaultInsn, S = String> {
+    pub fields: HashMap<String, Rc<FieldDef<S>>>,
+    pub args: HashMap<String, ArgsDef<S>>,
+    pub root: Group<I, S>,
 }
 
 pub fn parse<I>(src: &str) -> Result<DecodeTree<I>, Errors>

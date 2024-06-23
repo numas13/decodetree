@@ -21,7 +21,7 @@ impl<T> Gen<T> for Helper {
         pattern: &Pattern<T>,
     ) -> io::Result<bool> {
         let p = pad.shift();
-        let opcode = pattern.name.to_uppercase();
+        let opcode = pattern.name().to_uppercase();
         writeln!(out, "{{")?;
         writeln!(out, "{p}self.set_opcode(Opcode::{opcode});")?;
         writeln!(out, "{p}true")?;

@@ -20,11 +20,11 @@ fn decode() {
     }
 
     test(0x00000000, Some(Opcode::A));
-    test(0x01000000, Some(Opcode::B));
-    test(0x02000000, Some(Opcode::C));
-    test(0x03000000, Some(Opcode::D));
-    test(0x04000000, Some(Opcode::E));
-    test(0x04010000, Some(Opcode::F));
-    test(0x04ff0000, Some(Opcode::G));
-    test(0xff000000, None);
+    test(0x00000001, Some(Opcode::B));
+    test(0x00000002, Some(Opcode::C));
+    test(0x00000003, Some(Opcode::D));
+    test(0x00000004, Some(Opcode::E));
+    test(0x01000004, Some(Opcode::F));
+    test(0xff000004, Some(Opcode::G));
+    test(0x000000ff, None);
 }

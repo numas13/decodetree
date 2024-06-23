@@ -2,19 +2,34 @@ use std::{env, fs, process};
 
 use decodetree::{DecodeTree, Group, Overlap, Parser, Pattern};
 
+fn dump_field_len(len: u32, sxt: bool) {
+    print!("{}{len}", ["", "s"][sxt as usize]);
+}
+
+fn dump_unnamed_field(field: &decodetree::UnnamedField) {
+    print!("{}:", field.pos());
+    dump_field_len(field.len(), field.sxt());
+}
+
+fn dump_named_field(field: &decodetree::FieldRef) {
+    print!("{}:", field.field().name());
+    dump_field_len(field.len(), field.sxt());
+}
+
 fn dump_field_item(item: &decodetree::FieldItem) {
     use decodetree::FieldItem as E;
-    let (sxt, len) = match item {
-        E::Field { pos, len, sxt } => {
-            print!("{pos}");
-            (sxt, len)
-        }
-        E::FieldRef { field, len, sxt } => {
-            print!("{}", field.name.as_ref().unwrap());
-            (sxt, len)
-        }
-    };
-    print!(":{}{len}", ["", "s"][*sxt as usize]);
+    match item {
+        E::Field(f) => dump_unnamed_field(f),
+        E::FieldRef(f) => dump_named_field(f),
+    }
+}
+
+fn dump_field(field: &decodetree::Field) {
+    use decodetree::Field as E;
+    match field {
+        E::Field(f) => dump_unnamed_field(f),
+        E::FieldRef(f) => print!("%{}", f.name()),
+    }
 }
 
 fn dump_fields(tree: &DecodeTree) {
@@ -31,11 +46,11 @@ fn dump_fields(tree: &DecodeTree) {
     println!("# Fields:");
     for (name, field) in fields {
         print!("%{name}");
-        for item in &field.items {
+        for item in field.items() {
             print!(" ");
             dump_field_item(item);
         }
-        if let Some(func) = &field.func {
+        if let Some(func) = field.func() {
             print!(" !function={func}");
         }
         println!();
@@ -50,17 +65,17 @@ fn dump_args(tree: &DecodeTree) {
 
     let args = {
         let mut v: Vec<_> = tree.args.values().collect();
-        v.sort_by_key(|i| i.name.as_str());
+        v.sort_by_key(|i| i.name());
         v
     };
 
     println!("# Args:");
     for set in args {
-        print!("&{}", set.name);
-        for arg in &set.items {
-            print!(" {}", arg.name);
+        print!("&{}", set.name());
+        for arg in set.items() {
+            print!(" {}", arg.name());
         }
-        if set.is_extern {
+        if set.is_extern() {
             print!(" !extern");
         }
         println!();
@@ -74,22 +89,29 @@ fn align(depth: usize) {
     }
 }
 
-fn dump_value_kind(name: &str, kind: &decodetree::ValueKind) {
+fn dump_set_value(value: &decodetree::ArgsValue) {
+    use decodetree::ArgsValueKind as E;
+    print!("{}=", value.name());
+    match value.kind() {
+        E::Field(field) => dump_field(field),
+        E::Const(value) => print!("{value}"),
+    }
+}
+
+fn dump_value(value: &decodetree::Value) {
     use decodetree::ValueKind as E;
-    match kind {
-        E::Set(set) => {
+    let name = value.name();
+    match value.kind() {
+        E::Args(set) => {
             print!("&{name}");
-            for arg in &set.items {
+            for arg in set {
                 print!(" ");
-                dump_value_kind(&arg.name, arg.value.as_ref().unwrap());
+                dump_set_value(arg);
             }
         }
         E::Field(field) => {
             print!("{name}=");
-            match &field.name {
-                Some(name) => print!("%{name}"),
-                None => dump_field_item(&field.items[0]),
-            }
+            dump_field(field);
         }
         E::Const(value) => {
             println!("{name}={value}");
@@ -99,16 +121,16 @@ fn dump_value_kind(name: &str, kind: &decodetree::ValueKind) {
 
 fn dump_pattern(_tree: &DecodeTree, pat: &Pattern, depth: usize) {
     align(depth);
-    print!("{:04x}:{:04x} ", pat.opcode, pat.mask);
-    print!("{}", pat.name);
-    for arg in &pat.args {
+    print!("{:04x}:{:04x} ", pat.opcode(), pat.mask());
+    print!("{}", pat.name());
+    for arg in pat.args() {
         print!(" ");
-        dump_value_kind(&arg.name, &arg.kind);
+        dump_value(arg);
     }
-    if !pat.cond.is_empty() {
+    if !pat.conditions().is_empty() {
         print!(" ?");
-        for i in &pat.cond {
-            print!(" {}{}", ["", "~"][i.invert as usize], i.name);
+        for cond in pat.conditions() {
+            print!(" {}{}", ["", "~"][cond.invert() as usize], cond.name());
         }
     }
     println!();
@@ -117,8 +139,8 @@ fn dump_pattern(_tree: &DecodeTree, pat: &Pattern, depth: usize) {
 fn dump_overlap(tree: &DecodeTree, overlap: &Overlap, depth: usize) {
     use decodetree::OverlapItem as E;
     align(depth);
-    println!("{{ # {:04x}:{:04x}", overlap.opcode, overlap.mask);
-    for item in &overlap.items {
+    println!("{{ # {:04x}:{:04x}", overlap.opcode(), overlap.mask());
+    for item in overlap.iter() {
         match item {
             E::Pattern(pattern) => dump_pattern(tree, pattern, depth + 1),
             E::Group(group) => dump_group(tree, group, depth + 1),
@@ -131,8 +153,8 @@ fn dump_overlap(tree: &DecodeTree, overlap: &Overlap, depth: usize) {
 fn dump_group(tree: &DecodeTree, group: &Group, depth: usize) {
     use decodetree::Item as E;
     align(depth);
-    println!("[ # {:04x}", group.mask);
-    for item in &group.items {
+    println!("[ # {:04x}", group.mask());
+    for item in group.iter() {
         match item {
             E::Pattern(pattern) => dump_pattern(tree, pattern, depth + 1),
             E::Overlap(overlap) => dump_overlap(tree, overlap, depth + 1),

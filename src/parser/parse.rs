@@ -351,14 +351,6 @@ impl<'a> Arg<'a> {
     fn new(name: Span<'a>, ty: Option<Span<'a>>) -> Self {
         Self { name, ty }
     }
-
-    pub fn name(&self) -> &'a str {
-        &self.name
-    }
-
-    pub fn ty(&self) -> Option<&'a str> {
-        self.ty.as_deref().copied()
-    }
 }
 
 fn arg(s: Span) -> IResult<Arg> {

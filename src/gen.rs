@@ -6,7 +6,8 @@ use std::{
 };
 
 use crate::{
-    Args, DecodeTree, Field, FieldItem, Group, Insn, Item, Overlap, OverlapItem, Pattern, ValueKind,
+    ArgsValue, ArgsValueKind, DecodeTree, Field, FieldDef, FieldItem, Group, Insn, Item, Overlap,
+    OverlapItem, Pattern, ValueKind,
 };
 
 #[derive(Copy, Clone)]
@@ -194,12 +195,13 @@ where
         for (name, ty) in self.gen.additional_args() {
             write!(out, ", {name}: {ty}")?;
         }
-        for i in pattern.args.iter().filter(|i| self.gen.pass_arg(&i.name)) {
-            write!(out, ", {0}: ", i.name)?;
-            match i.kind {
-                ValueKind::Set(ref set) => write!(out, "&args_{}", set.name)?,
-                ValueKind::Field(_) => write!(out, "isize")?,
-                ValueKind::Const(_) => write!(out, "i64")?,
+        for value in pattern.args.iter().filter(|i| self.gen.pass_arg(i.name())) {
+            let name = value.name();
+            write!(out, ", {name}: ")?;
+            match value.kind() {
+                ValueKind::Args(..) => write!(out, "&args_{name}")?,
+                ValueKind::Const(..) => write!(out, "i64")?,
+                _ => write!(out, "isize")?,
             }
         }
         write!(out, ") -> bool")?;
@@ -327,7 +329,12 @@ where
         writeln!(out)
     }
 
-    fn gen_extract_filed<W: Write>(&self, out: &mut W, field: &Field, pad: Pad) -> io::Result<()> {
+    fn gen_extract_field_body<W: Write>(
+        &self,
+        out: &mut W,
+        field: &FieldDef,
+        pad: Pad,
+    ) -> io::Result<()> {
         if field.items.len() == 1 {
             let f = &field.items[0];
             write!(out, "{pad}")?;
@@ -335,17 +342,24 @@ where
                 write!(out, "self.{func}(")?;
             }
             match f {
-                FieldItem::Field { pos, len, sxt } => {
-                    let func = if *sxt { &self.sextract } else { &self.zextract };
+                FieldItem::Field(f) => {
+                    let (pos, len) = (f.pos(), f.len());
+                    let func = if f.sxt() {
+                        &self.sextract
+                    } else {
+                        &self.zextract
+                    };
                     write!(out, "{func}(insn, {pos}, {len}) as isize")?;
                 }
-                FieldItem::FieldRef { field, len, sxt } => {
-                    let func = if *sxt { &self.sextract } else { &self.zextract };
-                    write!(
-                        out,
-                        "{func}(Self::extract_{}(insn), 0, {len}) as isize",
-                        field.name.as_ref().unwrap()
-                    )?;
+                FieldItem::FieldRef(f) => {
+                    let (field, len) = (f.field(), f.len());
+                    let func = if f.sxt() {
+                        &self.sextract
+                    } else {
+                        &self.zextract
+                    };
+                    let name = field.name();
+                    write!(out, "{func}(Self::extract_{name}(insn), 0, {len}) as isize")?;
                 }
             }
             if field.func.is_some() {
@@ -354,21 +368,25 @@ where
             writeln!(out)?;
         } else {
             writeln!(out, "{pad}let mut out = 0;")?;
-            for i in &field.items {
+            for i in field.items() {
                 match i {
-                    FieldItem::Field { pos, len, sxt } => {
+                    FieldItem::Field(f) => {
+                        let (pos, len) = (f.pos(), f.len());
                         writeln!(out, "{pad}out <<= {};", len)?;
-                        let func = if *sxt { &self.sextract } else { &self.zextract };
+                        let func = if f.sxt() {
+                            &self.sextract
+                        } else {
+                            &self.zextract
+                        };
                         writeln!(out, "{pad}out |= {func}(insn, {pos}, {len}) as isize;")?;
                     }
-                    FieldItem::FieldRef { field, len, sxt } => {
+                    FieldItem::FieldRef(f) => {
+                        let (field, len) = (f.field(), f.len());
                         writeln!(out, "{pad}out <<= {};", len)?;
-                        let s = if *sxt { "s" } else { "" };
-                        writeln!(
-                            out,
-                            "{pad}out |= {s}extract(Self::extract_{}(insn), 0, {len}) as isize;",
-                            field.name.as_ref().unwrap()
-                        )?;
+                        let s = ["", "s"][f.sxt() as usize];
+                        let name = field.name();
+                        writeln!(out, "{pad}let tmp0 = Self::extract_{name}(insn);")?;
+                        writeln!(out, "{pad}out |= {s}extract(tmp0, 0, {len}) as isize;")?;
                     }
                 }
             }
@@ -384,42 +402,53 @@ where
     fn gen_extract_fields<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         self.gen_comment(out, pad, "Extract functions")?;
         for field in self.tree.fields.values() {
+            let name = field.name();
+            let ty = &self.type_name;
             writeln!(
                 out,
-                "{pad}fn extract_{}(&mut self, insn: {}) -> isize {{",
-                field.name.as_ref().unwrap(),
-                self.type_name
+                "{pad}fn extract_{name}(&mut self, insn: {ty}) -> isize {{",
             )?;
-            self.gen_extract_filed(out, field, pad.shift())?;
+            self.gen_extract_field_body(out, field, pad.shift())?;
             writeln!(out, "{pad}}}",)?;
             writeln!(out)?;
         }
         Ok(())
     }
 
-    fn gen_extract_set<W: Write>(&self, out: &mut W, pad: Pad, set: &Args) -> io::Result<()> {
-        writeln!(out, "{pad}let {0} = args_{0} {{", set.name)?;
-        for arg in &set.items {
-            write!(out, "{}{}: ", pad.shift(), arg.name)?;
-            if let Some(value) = arg.value.as_ref() {
-                match value {
-                    ValueKind::Set(..) => todo!(),
-                    ValueKind::Field(f) => {
-                        if let Some(ref name) = f.name {
-                            write!(out, "self.extract_{name}(insn)")?;
-                        } else {
-                            writeln!(out, "{{")?;
-                            self.gen_extract_filed(out, f, pad.shift2())?;
-                            write!(out, "{}}}", pad.shift())?;
-                        }
-                    }
-                    ValueKind::Const(v) => {
-                        write!(out, "{v}")?;
-                    }
-                }
-            } else {
-                // TODO: generate error for undefined fields in sets
-                panic!();
+    fn gen_extract_field<W: Write>(&self, out: &mut W, field: &Field) -> io::Result<()> {
+        match field {
+            Field::FieldRef(field) => {
+                let name = field.name();
+                write!(out, "self.extract_{name}(insn)")?;
+            }
+            Field::Field(field) => {
+                let pos = field.pos();
+                let len = field.len();
+                let func = if field.sxt() {
+                    &self.sextract
+                } else {
+                    &self.zextract
+                };
+                writeln!(out, "{func}(insn, {pos}, {len}) as isize")?;
+            }
+        }
+        Ok(())
+    }
+
+    fn gen_extract_set<W: Write>(
+        &self,
+        out: &mut W,
+        pad: Pad,
+        name: &str,
+        items: &[ArgsValue],
+    ) -> io::Result<()> {
+        writeln!(out, "{pad}let {name} = args_{name} {{")?;
+        let p = pad.shift();
+        for arg in items {
+            write!(out, "{p}{}: ", arg.name)?;
+            match &arg.kind {
+                ArgsValueKind::Field(f) => self.gen_extract_field(out, f)?,
+                ArgsValueKind::Const(v) => write!(out, "{v}")?,
             }
             if let Some(ref ty) = arg.ty {
                 write!(out, " as {ty}")?;
@@ -431,21 +460,19 @@ where
     }
 
     fn gen_extract_args<W: Write>(&self, out: &mut W, i: &Pattern<T>, pad: Pad) -> io::Result<()> {
-        for arg in i.args.iter().filter(|i| self.gen.pass_arg(&i.name)) {
-            match arg.kind {
-                ValueKind::Set(ref set) => self.gen_extract_set(out, pad, set)?,
-                ValueKind::Field(ref f) => {
-                    write!(out, "{pad}let {} = ", arg.name)?;
-                    if let Some(ref name) = f.name {
-                        writeln!(out, "self.extract_{name}(insn);")?;
-                    } else {
-                        writeln!(out, "{{")?;
-                        self.gen_extract_filed(out, f, pad.shift())?;
-                        writeln!(out, "{pad}}};")?;
-                    }
+        for arg in i.args.iter().filter(|i| self.gen.pass_arg(i.name())) {
+            let name = arg.name();
+            match arg.kind() {
+                ValueKind::Args(set) => {
+                    self.gen_extract_set(out, pad, name, set.as_slice())?;
+                }
+                ValueKind::Field(f) => {
+                    write!(out, "{pad}let {name} = ")?;
+                    self.gen_extract_field(out, f)?;
+                    writeln!(out, ";")?;
                 }
                 ValueKind::Const(v) => {
-                    writeln!(out, "{pad}let {} = {v};", arg.name)?;
+                    writeln!(out, "{pad}let {name} = {v};")?;
                 }
             }
         }
@@ -463,12 +490,8 @@ where
         for (name, _) in self.gen.additional_args() {
             write!(out, ", {name}")?;
         }
-        for arg in pattern.args.iter().filter(|i| self.gen.pass_arg(&i.name)) {
-            if arg.is_set() {
-                write!(out, ", &{}", arg.name)?;
-            } else {
-                write!(out, ", {}", arg.name)?;
-            }
+        for arg in pattern.args.iter().filter(|i| self.gen.pass_arg(i.name())) {
+            write!(out, ", {}{}", ["", "&"][arg.is_set() as usize], arg.name())?;
         }
         writeln!(out, ") {{")?;
         self.gen.gen_on_success(out, pad.shift(), pattern)?;

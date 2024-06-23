@@ -1,0 +1,47 @@
+# cargo run --example=parse data/example.decode
+
+# Fields:
+%rd         4:4
+%rs         8:4
+%rt         12:4
+%imm        rt:s4 rs:4
+
+# Args:
+&r1         rd rs
+&r2         rd rs rt
+&i          rd imm
+
+# Formats:
+@r1         .... .... .... .... &r1 %rd %rs
+@r2         .... .... .... .... &r2 %rd %rs %rt
+@i          .... .... .... .... &i  %rd %imm
+
+# Patterns:
+{
+  nop       ---- ---- 0000 0000             ? alias
+  mv        0000 .... .... 0000 @r1         ? alias
+  mv        .... 0000 .... 0000 @r1 rs=%rt  ? alias
+  add       .... .... .... 0000 @r2
+}
+{
+  [
+    a       0000 0000 0000 0001             ? alias
+    b       0001 0000 0000 0001             ? alias
+    c       0010 0000 0000 0001             ? alias
+    d       0011 0000 0000 0001             ? alias
+  ]
+  neg       .... 0000 .... 0001 @r1 rs=%rt  ? alias
+  sub       .... .... .... 0001 @r2
+}
+li          .... .... .... 0010 @i
+lui           imm:s8  rd:4 1111 &i
+{
+  fadd      .... .... .... 1000 @r2         ? f
+  mul       .... .... .... 1000 @r2         ? m
+}
+{
+  fmul      .... .... .... 1001 @r2         ? f
+  mulh      .... .... .... 1001 @r2         ? m
+}
+div         .... .... .... 1010 @r2         ? d
+rem         .... .... .... 1011 @r2         ? d

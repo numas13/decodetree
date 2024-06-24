@@ -154,6 +154,10 @@ impl<S> FieldDef<S> {
     pub fn items(&self) -> &[FieldItem<S>] {
         &self.items
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = &FieldItem<S>> {
+        self.items.iter()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -190,6 +194,10 @@ impl<S> ArgsDef<S> {
 
     pub fn items(&self) -> &[ArgDef<S>] {
         self.items.as_slice()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ArgDef<S>> {
+        self.items.iter()
     }
 }
 
@@ -432,6 +440,10 @@ impl<I, S> Overlap<I, S> {
         &self.opcode
     }
 
+    pub fn as_slice(&self) -> &[OverlapItem<I, S>] {
+        self.items.as_slice()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &OverlapItem<I, S>> {
         self.items.iter()
     }
@@ -482,6 +494,10 @@ pub struct Group<I = DefaultInsn, S = String> {
 impl<I, S> Group<I, S> {
     pub fn mask(&self) -> &I {
         &self.mask
+    }
+
+    pub fn as_slice(&self) -> &[Item<I, S>] {
+        self.items.as_slice()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Item<I, S>> {

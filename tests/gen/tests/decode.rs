@@ -6,6 +6,10 @@ struct Insn {
 }
 
 impl Decode for Insn {
+    fn cond_alias(&self) -> bool {
+        true
+    }
+
     fn set_opcode(&mut self, opcode: Opcode) {
         self.opcode = Some(opcode);
     }

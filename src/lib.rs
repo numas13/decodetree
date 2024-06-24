@@ -349,6 +349,10 @@ impl<I, S> Pattern<I, S> {
         self.args.as_slice()
     }
 
+    pub fn has_conditions(&self) -> bool {
+        !self.conditions().is_empty()
+    }
+
     pub fn conditions(&self) -> &[Cond<S>] {
         self.cond.as_slice()
     }

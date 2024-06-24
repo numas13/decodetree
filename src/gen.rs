@@ -217,7 +217,7 @@ where
             let name = value.name();
             write!(out, ", {name}: ")?;
             match value.kind() {
-                ValueKind::Args(..) => write!(out, "&args_{name}")?,
+                ValueKind::Args(..) => write!(out, "args_{name}")?,
                 ValueKind::Const(..) => write!(out, "i64")?,
                 _ => write!(out, "isize")?,
             }
@@ -514,12 +514,57 @@ where
             write!(out, ", {name}")?;
         }
         for arg in pattern.args.iter().filter(|i| self.gen.pass_arg(i.name())) {
-            write!(out, ", {}{}", ["", "&"][arg.is_set() as usize], arg.name())?;
+            write!(out, ", {}", arg.name())?;
         }
         writeln!(out, ") {{")?;
         self.gen.gen_on_success(out, pad.shift(), pattern)?;
         writeln!(out, "{}return true;", pad.shift())?;
         writeln!(out, "{pad}}}")?;
+        Ok(())
+    }
+
+    fn gen_pattern_conditions<W: Write>(
+        &self,
+        out: &mut W,
+        _: Pad,
+        pat: &Pattern<T, S>,
+    ) -> io::Result<()> {
+        for (i, cond) in pat.cond.iter().enumerate() {
+            if i != 0 {
+                write!(out, " && ")?;
+            }
+            let inv = if cond.invert { "!" } else { "" };
+            write!(out, "{inv}self.cond_{}()", cond.name)?;
+        }
+        Ok(())
+    }
+
+    fn gen_group_item<W: Write>(
+        &mut self,
+        out: &mut W,
+        mut pad: Pad,
+        item: &Item<T, S>,
+        mask: T,
+        next_mask: T,
+    ) -> io::Result<()> {
+        match item {
+            Item::Pattern(pat) => {
+                if pat.has_conditions() {
+                    write!(out, "{pad}if ")?;
+                    self.gen_pattern_conditions(out, pad, pat)?;
+                    writeln!(out, " {{")?;
+                    pad.right();
+                }
+                self.gen_call_trans_func(out, pad, pat)?;
+                if pat.has_conditions() {
+                    pad.left();
+                    writeln!(out, "{pad}}}")?;
+                }
+            }
+            Item::Overlap(group) => {
+                self.gen_decode_overlap(out, pad, group, mask.bit_or(&next_mask))?;
+            }
+        }
         Ok(())
     }
 
@@ -536,74 +581,54 @@ where
             .bit_andn(&prev_mask);
         let next_mask = prev_mask.bit_or(&root_mask);
 
-        let map = {
+        let opcode_items = {
             let mut map = HashMap::<_, Vec<_>>::new();
             for i in items {
                 map.entry(i.opcode().bit_and(&root_mask))
                     .or_default()
                     .push(i);
             }
-            map
+            let mut vec: Vec<_> = map.into_iter().collect();
+            vec.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())));
+            vec
         };
 
-        writeln!(
-            out,
-            "{pad}match insn & {root_mask:#x} {{ // non-overlap group"
-        )?;
-
-        let mut map: Vec<_> = map.into_iter().collect();
-        map.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())));
-
+        writeln!(out, "{pad}match insn & {root_mask:#x} {{")?;
         pad.right();
-        for (opcode, items) in map {
-            let mask = items[0].mask();
-            if !items.iter().all(|i| mask == i.mask()) {
-                writeln!(out, "{pad}{:#x} => {{", opcode)?;
+
+        for (opcode, items) in opcode_items.into_iter().filter(|(_, i)| !i.is_empty()) {
+            let first_mask = items[0].mask();
+            writeln!(out, "{pad}{opcode:#x} => {{")?;
+
+            if !items.iter().all(|i| first_mask == i.mask()) {
                 self.gen_decode_group_items(out, pad.shift(), items, next_mask)?;
             } else {
-                write!(out, "{pad}{:#x} ", opcode)?;
-
-                let m = mask.bit_andn(&next_mask);
-                writeln!(out, "=> {{")?;
-
-                pad.right();
-                writeln!(out, "{pad}match insn & {m:#x} {{")?;
-
-                pad.right();
-                for i in &items {
-                    match i {
-                        Item::Pattern(pat) => {
-                            // TODO: comment file:line
-                            writeln!(out, "{pad}// {:#x}:{:#x}", pat.mask, pat.opcode)?;
-                            write!(out, "{pad}{:#x}", pat.opcode.bit_and(&m))?;
-                            for (i, cond) in pat.cond.iter().enumerate() {
-                                write!(out, " {} ", if i == 0 { "if" } else { "&&" })?;
-                                let inv = if cond.invert { "!" } else { "" };
-                                write!(out, "{inv}self.cond_{}()", cond.name)?;
-                            }
-                            writeln!(out, " => {{")?;
-                            self.gen_call_trans_func(out, pad.shift(), pat)?;
-                            writeln!(out, "{pad}}}")?;
-                        }
-                        Item::Overlap(group) => {
-                            writeln!(out, "{pad}{:#x} => {{", group.opcode.bit_and(&m))?;
-                            self.gen_decode_overlap(out, pad.shift(), group, m.bit_or(&next_mask))?;
-                            writeln!(out, "{pad}}}")?;
-                        }
+                let mask = first_mask.bit_andn(&next_mask);
+                if mask != T::zero() {
+                    pad.right();
+                    writeln!(out, "{pad}match insn & {mask:#x} {{")?;
+                    pad.right();
+                    for i in &items {
+                        writeln!(out, "{pad}// {:#x}:{:#x}", i.opcode(), i.mask())?;
+                        writeln!(out, "{pad}{:#x} => {{", i.opcode().bit_and(&mask))?;
+                        self.gen_group_item(out, pad.shift(), i, mask, next_mask)?;
+                        writeln!(out, "{pad}}}")?;
                     }
+                    writeln!(out, "{pad}_ => {{}}")?;
+                    pad.left();
+                    writeln!(out, "{pad}}}")?;
+                    pad.left();
+                } else {
+                    assert!(items.len() == 1);
+                    self.gen_group_item(out, pad.shift(), items[0], mask, next_mask)?;
                 }
-                writeln!(out, "{pad}_ => {{}}")?;
-                pad.left();
-
-                writeln!(out, "{pad}}}")?;
-                pad.left();
             }
             writeln!(out, "{pad}}}")?;
         }
         writeln!(out, "{pad}_ => {{}}")?;
-        pad.left();
 
-        writeln!(out, "{pad}}} // match insn & {root_mask:#x}")?;
+        pad.left();
+        writeln!(out, "{pad}}}")?;
 
         Ok(())
     }
@@ -611,25 +636,38 @@ where
     fn gen_decode_overlap<W: Write>(
         &mut self,
         out: &mut W,
-        pad: Pad,
+        mut pad: Pad,
         group: &Overlap<T, S>,
         prev: T,
     ) -> io::Result<()> {
-        writeln!(out, "{pad}// overlap group",)?;
         for i in &group.items {
             match i {
                 OverlapItem::Pattern(pat) => {
-                    writeln!(out, "{pad}// {:#x}:{:#x}", pat.mask, pat.opcode)?;
-                    let m = pat.mask.bit_andn(&prev);
-                    let o = pat.opcode.bit_andn(&prev);
-                    write!(out, "{pad}if ")?;
-                    for cond in &pat.cond {
-                        let inv = if cond.invert { "!" } else { "" };
-                        write!(out, "{inv}self.cond_{}() && ", cond.name)?;
+                    let mask = pat.mask.bit_andn(&prev);
+                    let is_mask_non_zero = mask != T::zero();
+                    let do_if = is_mask_non_zero || pat.has_conditions();
+                    if do_if {
+                        write!(out, "{pad}if ")?;
+                        if pat.has_conditions() {
+                            self.gen_pattern_conditions(out, pad, pat)?;
+                        }
+                        if is_mask_non_zero && pat.has_conditions() {
+                            write!(out, " && ")?;
+                        }
+                        if is_mask_non_zero {
+                            let opcode = pat.opcode.bit_andn(&prev);
+                            write!(out, "insn & {mask:#x} == {opcode:#x}")?;
+                        }
+                        writeln!(out, " {{ ")?;
+                        pad.right();
                     }
-                    writeln!(out, "insn & {m:#x} == {o:#x} {{ ")?;
-                    self.gen_call_trans_func(out, pad.shift(), pat)?;
-                    writeln!(out, "{pad}}}")?;
+
+                    self.gen_call_trans_func(out, pad, pat)?;
+
+                    if do_if {
+                        pad.left();
+                        writeln!(out, "{pad}}}")?;
+                    }
                 }
                 OverlapItem::Group(group) => {
                     self.gen_decode_group(out, pad, group, prev)?;
@@ -666,13 +704,6 @@ where
     }
 
     fn gen_trait<W: Write>(&mut self, out: &mut W, mut pad: Pad) -> io::Result<()> {
-        // TODO: fix clippy lints for generated code
-        writeln!(out, "#[allow(clippy::collapsible_if)]")?;
-        writeln!(out, "#[allow(clippy::single_match)]")?;
-        writeln!(out, "#[allow(clippy::erasing_op)]")?;
-        writeln!(out, "#[allow(clippy::bad_bit_mask)]")?;
-        writeln!(out, "#[allow(clippy::too_many_arguments)]")?;
-        writeln!(out, "#[allow(clippy::unnecessary_cast)]")?;
         if self.stubs {
             writeln!(out, "#[allow(unused_variables)]")?;
         }

@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     ArgsValue, ArgsValueKind, DecodeTree, Field, FieldDef, FieldItem, Group, Insn, Item, Overlap,
-    OverlapItem, Pattern, ValueKind,
+    OverlapItem, Pattern, Str, ValueKind,
 };
 
 #[derive(Copy, Clone)]
@@ -36,7 +36,7 @@ impl fmt::Display for Pad {
 }
 
 #[allow(unused_variables)]
-pub trait Gen<T, S = String> {
+pub trait Gen<T, S = Str> {
     fn pass_arg(&self, name: &str) -> bool {
         true
     }
@@ -84,20 +84,20 @@ pub trait Gen<T, S = String> {
 impl<T> Gen<T> for () {}
 
 pub struct GeneratorBuilder {
-    trait_name: String,
-    type_name: Option<String>,
-    zextract: String,
-    sextract: String,
+    trait_name: Str,
+    type_name: Option<Str>,
+    zextract: Str,
+    sextract: Str,
     stubs: bool,
 }
 
 impl Default for GeneratorBuilder {
     fn default() -> Self {
         Self {
-            trait_name: String::from("Decode"),
+            trait_name: Str::from("Decode"),
             type_name: None,
-            zextract: String::from("zextract"),
-            sextract: String::from("sextract"),
+            zextract: Str::from("zextract"),
+            sextract: Str::from("sextract"),
             stubs: false,
         }
     }
@@ -105,22 +105,22 @@ impl Default for GeneratorBuilder {
 
 impl GeneratorBuilder {
     pub fn trait_name(mut self, s: &str) -> Self {
-        self.trait_name = s.to_owned();
+        self.trait_name = s.into();
         self
     }
 
     pub fn type_name(mut self, s: &str) -> Self {
-        self.type_name = Some(s.to_owned());
+        self.type_name = Some(s.into());
         self
     }
 
     pub fn zextract(mut self, func: &str) -> Self {
-        self.zextract = func.to_owned();
+        self.zextract = func.into();
         self
     }
 
     pub fn sextract(mut self, func: &str) -> Self {
-        self.sextract = func.to_owned();
+        self.sextract = func.into();
         self
     }
 
@@ -136,7 +136,9 @@ impl GeneratorBuilder {
     {
         Generator {
             trait_name: self.trait_name,
-            type_name: self.type_name.unwrap_or_else(|| format!("u{}", T::width())),
+            type_name: self
+                .type_name
+                .unwrap_or_else(|| format!("u{}", T::width()).into()),
             zextract: self.zextract,
             sextract: self.sextract,
             stubs: self.stubs,
@@ -148,16 +150,22 @@ impl GeneratorBuilder {
     }
 }
 
-pub struct Generator<'a, T, S = String, G = ()> {
-    trait_name: String,
-    type_name: String,
-    zextract: String,
-    sextract: String,
+pub struct Generator<'a, T = super::DefaultInsn, S = Str, G = ()> {
+    trait_name: Str,
+    type_name: Str,
+    zextract: Str,
+    sextract: Str,
     stubs: bool,
     gen: G,
     tree: &'a DecodeTree<T, S>,
     opcodes: HashSet<&'a str>,
     conditions: HashSet<&'a str>,
+}
+
+impl Generator<'_> {
+    pub fn builder() -> GeneratorBuilder {
+        GeneratorBuilder::default()
+    }
 }
 
 impl<'a, T, S: 'a, G> Generator<'a, T, S, G>
@@ -166,10 +174,6 @@ where
     S: Eq + Hash + fmt::Display + Deref<Target = str>,
     G: Gen<T, S>,
 {
-    pub fn builder() -> GeneratorBuilder {
-        GeneratorBuilder::default()
-    }
-
     fn gen_comment<W: Write>(&self, out: &mut W, pad: Pad, msg: &str) -> io::Result<()> {
         let width = 60;
         writeln!(out, "{pad}///{:/<width$}///", "")?;

@@ -16,6 +16,9 @@ pub use crate::gen::Generator;
 
 type DefaultInsn = u32;
 
+/// Default type for storing strings.
+pub type Str = Box<str>;
+
 pub trait Insn: Sized + Copy + Clone + Eq + Ord + Hash + LowerHex + Default {
     // TODO: zero_extract
     // TODO: sign_extract
@@ -94,7 +97,7 @@ impl UnnamedField {
 }
 
 #[derive(Clone, Debug)]
-pub struct FieldRef<S = String> {
+pub struct FieldRef<S = Str> {
     field: Rc<FieldDef<S>>,
     len: u32,
     sxt: bool,
@@ -120,7 +123,7 @@ impl<S> FieldRef<S> {
 }
 
 #[derive(Clone, Debug)]
-pub enum FieldItem<S = String> {
+pub enum FieldItem<S = Str> {
     Field(UnnamedField),
     FieldRef(FieldRef<S>),
 }
@@ -136,7 +139,7 @@ impl<S> FieldItem<S> {
 }
 
 #[derive(Clone, Debug)]
-pub struct FieldDef<S = String> {
+pub struct FieldDef<S = Str> {
     name: S,
     func: Option<S>,
     items: Vec<FieldItem<S>>,
@@ -161,7 +164,7 @@ impl<S> FieldDef<S> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ArgDef<S = String> {
+pub struct ArgDef<S = Str> {
     name: S,
     ty: Option<S>,
 }
@@ -177,7 +180,7 @@ impl<S> ArgDef<S> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ArgsDef<S = String> {
+pub struct ArgsDef<S = Str> {
     name: S,
     is_extern: bool,
     items: Vec<ArgDef<S>>,
@@ -202,19 +205,19 @@ impl<S> ArgsDef<S> {
 }
 
 #[derive(Clone, Debug)]
-pub enum Field<S = String> {
+pub enum Field<S = Str> {
     Field(UnnamedField),
     FieldRef(Rc<FieldDef<S>>),
 }
 
 #[derive(Clone, Debug)]
-pub enum ArgsValueKind<S = String> {
+pub enum ArgsValueKind<S = Str> {
     Const(i64),
     Field(Field<S>),
 }
 
 #[derive(Clone, Debug)]
-pub struct ArgsValue<S = String> {
+pub struct ArgsValue<S = Str> {
     name: S,
     ty: Option<S>,
     kind: Option<ArgsValueKind<S>>,
@@ -235,14 +238,14 @@ impl<S> ArgsValue<S> {
 }
 
 #[derive(Clone, Debug)]
-pub enum ValueKind<S = String> {
+pub enum ValueKind<S = Str> {
     Const(i64),
     Field(Field<S>),
     Args(Vec<ArgsValue<S>>),
 }
 
 #[derive(Clone, Debug)]
-pub struct Value<S = String> {
+pub struct Value<S = Str> {
     name: S,
     kind: ValueKind<S>,
 }
@@ -299,7 +302,7 @@ impl<S> Deref for Value<S> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Cond<S = String> {
+pub struct Cond<S = Str> {
     name: S,
     invert: bool,
 }
@@ -315,7 +318,7 @@ impl<S> Cond<S> {
 }
 
 #[derive(Clone, Debug)]
-pub struct Pattern<I = DefaultInsn, S = String> {
+pub struct Pattern<I = DefaultInsn, S = Str> {
     name: S,
     mask: I,
     opcode: I,
@@ -410,7 +413,7 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub enum OverlapItem<I = DefaultInsn, S = String> {
+pub enum OverlapItem<I = DefaultInsn, S = Str> {
     Pattern(Pattern<I, S>),
     Group(Box<Group<I, S>>),
 }
@@ -425,7 +428,7 @@ impl<I, S> OverlapItem<I, S> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Overlap<I = DefaultInsn, S = String> {
+pub struct Overlap<I = DefaultInsn, S = Str> {
     mask: I,
     opcode: I,
     items: Vec<OverlapItem<I, S>>,
@@ -457,7 +460,7 @@ impl<I, S> Overlap<I, S> {
 }
 
 #[derive(Clone, Debug)]
-pub enum Item<I, S = String> {
+pub enum Item<I, S = Str> {
     Pattern(Pattern<I, S>),
     Overlap(Box<Overlap<I, S>>),
 }
@@ -486,7 +489,7 @@ impl<I, S> Item<I, S> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Group<I = DefaultInsn, S = String> {
+pub struct Group<I = DefaultInsn, S = Str> {
     mask: I,
     items: Vec<Item<I, S>>,
 }
@@ -513,15 +516,15 @@ impl<I, S> Group<I, S> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct DecodeTree<I = DefaultInsn, S = String> {
+pub struct DecodeTree<I = DefaultInsn, S = Str> {
     pub fields: Vec<Rc<FieldDef<S>>>,
     pub args: Vec<ArgsDef<S>>,
     pub root: Group<I, S>,
 }
 
-pub fn parse<I>(src: &str) -> Result<DecodeTree<I>, Errors>
+pub fn parse<I>(src: &str) -> Result<DecodeTree<I, Str>, Errors>
 where
     I: Insn,
 {
-    Parser::<I>::new(src).parse()
+    Parser::<I, Str>::new(src).parse()
 }

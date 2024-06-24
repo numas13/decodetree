@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     error::{ErrorKind, Errors, Token},
-    DecodeTree, Insn, UnnamedField,
+    DecodeTree, Insn, Str, UnnamedField,
 };
 
 pub use parse::Span;
@@ -56,12 +56,12 @@ where
     }
 }
 
-pub struct Parser<'src, I = super::DefaultInsn, S = String> {
+pub struct Parser<'src, I = super::DefaultInsn, S = Str> {
     src: &'src str,
     insn_size: u32,
     is_fixed_insn: bool,
     fields: HashMap<&'src str, Rc<FieldDef<'src>>>,
-    fields_tree: HashMap<String, Rc<super::FieldDef<S>>>,
+    fields_tree: HashMap<Str, Rc<super::FieldDef<S>>>,
     args: HashMap<&'src str, ArgsDef<'src>>,
     formats: HashMap<&'src str, Pattern<'src, I>>,
     root: parse::Group<'src>,
@@ -142,7 +142,7 @@ where
         match self.fields.entry(def.name.fragment()) {
             Entry::Vacant(e) => {
                 e.insert(Rc::new(field));
-                self.fields_tree.insert(def.name.to_string(), field_def);
+                self.fields_tree.insert(Str::from(*def.name), field_def);
             }
             Entry::Occupied(e) => {
                 self.errors.redefined(Token::Field, def.name, e.get().name);

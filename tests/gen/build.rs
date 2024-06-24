@@ -79,7 +79,7 @@ where
     }
     let mut out = BufWriter::new(File::create(out).unwrap());
 
-    Generator::<T, _, Helper>::builder()
+    Generator::builder()
         .trait_name(trait_name)
         .stubs(true)
         .build(&tree, Helper::default())

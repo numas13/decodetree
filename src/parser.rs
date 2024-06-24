@@ -521,9 +521,21 @@ where
     }
 
     fn convert_group(&self, group: &Group<'src, I>) -> Group<I, S> {
+        let mut items: Vec<_> = group.items.iter().map(|i| self.convert_item(i)).collect();
+
+        items.sort_by(|a, b| {
+            let opc_a = a.opcode().bit_and(&group.mask);
+            let opc_b = b.opcode().bit_and(&group.mask);
+            opc_a.cmp(&opc_b).then_with(|| {
+                let opc_a = a.opcode().bit_and(a.mask());
+                let opc_b = b.opcode().bit_and(b.mask());
+                opc_a.cmp(&opc_b)
+            })
+        });
+
         Group {
             mask: group.mask,
-            items: group.items.iter().map(|i| self.convert_item(i)).collect(),
+            items,
         }
     }
 

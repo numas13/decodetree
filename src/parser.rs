@@ -38,15 +38,15 @@ struct ArgsDef<'src> {
     items: Vec<ArgsValue<'src>>,
 }
 
-impl<'src> ArgsDef<'src> {
-    fn to_args_def<S>(&self) -> super::ArgsDef<S>
-    where
-        S: From<&'src str>,
-    {
-        super::ArgsDef {
-            name: S::from(&self.name),
-            is_extern: self.is_extern,
-            items: self
+impl<'src, S> From<ArgsDef<'src>> for super::ArgsDef<S>
+where
+    S: From<&'src str>,
+{
+    fn from(other: ArgsDef<'src>) -> super::ArgsDef<S> {
+        Self {
+            name: S::from(&other.name),
+            is_extern: other.is_extern,
+            items: other
                 .items
                 .iter()
                 .map(|i| super::ArgDef {
@@ -63,17 +63,17 @@ pub struct Parser<'src, I = super::DefaultInsn, S = String> {
     insn_size: u32,
     is_fixed_insn: bool,
     fields: HashMap<&'src str, Rc<FieldDef<'src>>>,
+    fields_tree: HashMap<String, Rc<super::FieldDef<S>>>,
     args: HashMap<&'src str, ArgsDef<'src>>,
     formats: HashMap<&'src str, Pattern<'src, I>>,
     root: parse::Group<'src>,
     errors: Errors<'src>,
-    tree: DecodeTree<I, S>,
 }
 
 impl<'src, I, S> Parser<'src, I, S>
 where
     I: Insn,
-    S: Default + From<&'src str>,
+    S: Ord + From<&'src str>,
 {
     pub fn new(src: &'src str) -> Self {
         Self {
@@ -82,10 +82,10 @@ where
             is_fixed_insn: false,
             errors: Errors::new(src),
             fields: Default::default(),
+            fields_tree: Default::default(),
             args: Default::default(),
             formats: Default::default(),
             root: Default::default(),
-            tree: Default::default(),
         }
     }
 
@@ -144,7 +144,7 @@ where
         match self.fields.entry(def.name.fragment()) {
             Entry::Vacant(e) => {
                 e.insert(Rc::new(field));
-                self.tree.fields.insert(def.name.to_string(), field_def);
+                self.fields_tree.insert(def.name.to_string(), field_def);
             }
             Entry::Occupied(e) => {
                 self.errors.redefined(Token::Field, def.name, e.get().name);
@@ -168,10 +168,7 @@ where
                         })
                         .collect(),
                 };
-                let args = e.insert(args);
-                self.tree
-                    .args
-                    .insert(def.name.to_string(), args.to_args_def());
+                e.insert(args);
             }
             Entry::Occupied(e) => {
                 self.errors.redefined(Token::Args, def.name, e.get().name);
@@ -425,7 +422,7 @@ where
 
     fn convert_field_ref(&self, field_ref: &FieldRef<'src>) -> FieldRef<S> {
         let name = field_ref.field.name.fragment();
-        let field = self.tree.fields.get(*name).unwrap().clone();
+        let field = self.fields_tree.get(*name).unwrap().clone();
         FieldRef::new(field, field_ref.len, field_ref.sxt)
     }
 
@@ -440,7 +437,7 @@ where
         match field {
             Field::Field(unnamed) => Field::Field(*unnamed),
             Field::FieldRef(f) => {
-                Field::FieldRef(self.tree.fields.get(*f.name.fragment()).unwrap().clone())
+                Field::FieldRef(self.fields_tree.get(*f.name.fragment()).unwrap().clone())
             }
         }
     }
@@ -566,8 +563,16 @@ where
         let root = self.create_group(&root);
 
         if self.errors.is_empty() {
-            self.tree.root = self.convert_group(&root);
-            Ok(self.tree)
+            let root = self.convert_group(&root);
+
+            let mut fields: Vec<_> = self.fields_tree.into_values().collect();
+            fields.sort_by(|a, b| a.name.cmp(&b.name));
+
+            let mut args: Vec<super::ArgsDef<S>> =
+                self.args.into_values().map(|i| i.into()).collect();
+            args.sort_by(|a, b| a.name.cmp(&b.name));
+
+            Ok(DecodeTree { fields, args, root })
         } else {
             Err(self.errors)
         }

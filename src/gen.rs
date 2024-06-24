@@ -302,7 +302,7 @@ where
 
     fn gen_args<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         self.gen_comment(out, pad, "Argument sets")?;
-        for args in self.tree.args.values().filter(|i| !i.is_extern) {
+        for args in self.tree.args.iter().filter(|i| !i.is_extern) {
             writeln!(out, "{pad}#[allow(non_camel_case_types)]")?;
             if args.items.is_empty() {
                 writeln!(out, "{pad}pub struct args_{};", args.name)?;
@@ -322,7 +322,7 @@ where
     fn gen_extern_func_proto<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         self.gen_comment(out, pad, "Extern functions")?;
         let mut set = HashSet::new();
-        for i in self.tree.fields.values().filter_map(|i| i.func.as_deref()) {
+        for i in self.tree.fields.iter().filter_map(|i| i.func.as_deref()) {
             if !set.contains(i) {
                 set.insert(i);
                 write!(out, "{pad}fn {i}(&mut self, value: isize) -> isize")?;
@@ -408,7 +408,7 @@ where
 
     fn gen_extract_fields<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         self.gen_comment(out, pad, "Extract functions")?;
-        for field in self.tree.fields.values() {
+        for field in &self.tree.fields {
             let name = field.name();
             let ty = &self.type_name;
             writeln!(

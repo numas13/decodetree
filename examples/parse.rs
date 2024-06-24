@@ -36,16 +36,9 @@ fn dump_fields(tree: &DecodeTree) {
     if tree.fields.is_empty() {
         return;
     }
-
-    let fields = {
-        let mut v: Vec<_> = tree.fields.iter().collect();
-        v.sort_by_key(|(k, _)| k.as_str());
-        v
-    };
-
     println!("# Fields:");
-    for (name, field) in fields {
-        print!("%{name}");
+    for field in &tree.fields {
+        print!("%{}", field.name());
         for item in field.items() {
             print!(" ");
             dump_field_item(item);
@@ -62,15 +55,8 @@ fn dump_args(tree: &DecodeTree) {
     if tree.args.is_empty() {
         return;
     }
-
-    let args = {
-        let mut v: Vec<_> = tree.args.values().collect();
-        v.sort_by_key(|i| i.name());
-        v
-    };
-
     println!("# Args:");
-    for set in args {
+    for set in &tree.args {
         print!("&{}", set.name());
         for arg in set.items() {
             print!(" {}", arg.name());

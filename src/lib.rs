@@ -4,7 +4,7 @@ mod parser;
 #[cfg(feature = "gen")]
 pub mod gen;
 
-use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::Rc};
+use std::{fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::Rc};
 
 use crate::parser::Span;
 
@@ -498,8 +498,8 @@ impl<I, S> Group<I, S> {
 
 #[derive(Clone, Debug, Default)]
 pub struct DecodeTree<I = DefaultInsn, S = String> {
-    pub fields: HashMap<String, Rc<FieldDef<S>>>,
-    pub args: HashMap<String, ArgsDef<S>>,
+    pub fields: Vec<Rc<FieldDef<S>>>,
+    pub args: Vec<ArgsDef<S>>,
     pub root: Group<I, S>,
 }
 

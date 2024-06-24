@@ -7,8 +7,6 @@ use std::{
     str,
 };
 
-use nom::Finish;
-
 use crate::{
     error::{ErrorKind, Errors, Token},
     DecodeTree, Insn, UnnamedField,
@@ -540,9 +538,9 @@ where
         use parse::Stmt;
 
         let mut cur = Span::new(self.src);
-        while !cur.is_empty() {
-            match parse::stmt(cur).finish() {
-                Ok((tail, stmt)) => {
+        loop {
+            match parse::stmt(cur) {
+                Ok(Some((tail, stmt))) => {
                     match stmt {
                         Stmt::FieldDef(def) => self.add_field_def(def),
                         Stmt::ArgsDef(def) => self.add_args_def(def),
@@ -552,6 +550,7 @@ where
                     }
                     cur = tail;
                 }
+                Ok(None) => break,
                 Err(err) => {
                     self.errors.push_err(err);
                     break;

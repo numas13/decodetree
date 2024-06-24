@@ -7,9 +7,10 @@ use nom::{
         digit1, hex_digit1, line_ending, multispace0, not_line_ending, one_of, satisfy, space0,
         space1,
     },
-    combinator::{cut, eof, map, opt, recognize, success, value, verify},
+    combinator::{cut, eof, fail, map, opt, recognize, success, value, verify},
     multi::{fold_many0, many0, many0_count, many1, many1_count},
     sequence::{delimited, pair, preceded, separated_pair, terminated},
+    Finish,
 };
 use nom_locate::LocatedSpan;
 
@@ -87,7 +88,7 @@ fn line_comment(s: Span) -> IResult<()> {
     value((), preceded(char('#'), not_line_ending))(s)
 }
 
-fn whitespace0(s: Span) -> IResult<()> {
+pub fn whitespace0(s: Span) -> IResult<()> {
     value(
         (),
         terminated(
@@ -625,18 +626,22 @@ pub enum Stmt<'a> {
     Group(Group<'a>),
 }
 
-pub fn stmt(s: Span) -> IResult<Stmt> {
-    delimited(
-        whitespace0,
-        alt((
-            map(field_def, Stmt::FieldDef),
-            map(args_def, Stmt::ArgsDef),
-            map(format_def, Stmt::FormatDef),
-            map(pattern_def, Stmt::PatternDef),
-            map(group, Stmt::Group),
-        )),
-        eol,
-    )(s)
+pub fn stmt(s: Span) -> Result<Option<(Span, Stmt)>, Error> {
+    let (s, _) = whitespace0(s).unwrap();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    let p = alt((
+        map(group, Stmt::Group),
+        map(field_def, Stmt::FieldDef),
+        map(args_def, Stmt::ArgsDef),
+        map(format_def, Stmt::FormatDef),
+        map(pattern_def, Stmt::PatternDef),
+        map_err(fail, |e| {
+            e.or_kind_take(ErrorKind::Unexpected, |c| c.is_whitespace())
+        }),
+    ));
+    terminated(p, eol)(s).finish().map(Some)
 }
 
 #[cfg(test)]

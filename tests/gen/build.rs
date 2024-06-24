@@ -17,14 +17,15 @@ impl<T> Gen<T> for Helper {
     fn gen_trans_body<W: Write>(
         &mut self,
         out: &mut W,
-        pad: Pad,
+        mut pad: Pad,
         pattern: &Pattern<T>,
     ) -> io::Result<bool> {
-        let p = pad.shift();
         let opcode = pattern.name().to_uppercase();
         writeln!(out, "{{")?;
-        writeln!(out, "{p}self.set_opcode(Opcode::{opcode});")?;
-        writeln!(out, "{p}true")?;
+        pad.right();
+        writeln!(out, "{pad}self.set_opcode(Opcode::{opcode});")?;
+        writeln!(out, "{pad}true")?;
+        pad.left();
         writeln!(out, "{pad}}}")?;
         Ok(true)
     }
@@ -38,7 +39,7 @@ impl<T> Gen<T> for Helper {
     fn gen_opcodes<W: Write>(
         &mut self,
         out: &mut W,
-        pad: Pad,
+        mut pad: Pad,
         opcodes: &HashSet<&str>,
     ) -> io::Result<()> {
         let opcodes = {
@@ -50,10 +51,11 @@ impl<T> Gen<T> for Helper {
         writeln!(out)?;
         writeln!(out, "{pad}#[derive(Copy, Clone, Debug, PartialEq, Eq)]")?;
         writeln!(out, "{pad}pub enum Opcode {{")?;
-        let p = pad.shift();
+        pad.right();
         for i in opcodes {
-            writeln!(out, "{p}{},", i.to_uppercase())?;
+            writeln!(out, "{pad}{},", i.to_uppercase())?;
         }
+        pad.left();
         writeln!(out, "{pad}}}")?;
         Ok(())
     }

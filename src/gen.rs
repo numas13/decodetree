@@ -20,8 +20,15 @@ impl Pad {
         Self(self.0 + 4)
     }
 
-    pub fn shift2(self) -> Self {
-        Self(self.0 + 8)
+    pub fn right(&mut self) -> Self {
+        self.0 += 4;
+        *self
+    }
+
+    pub fn left(&mut self) -> Self {
+        assert!(self.0 >= 4);
+        self.0 -= 4;
+        *self
     }
 }
 
@@ -519,15 +526,15 @@ where
     fn gen_decode_group_items<W: Write>(
         &mut self,
         out: &mut W,
+        mut pad: Pad,
         items: Vec<&Item<T, S>>,
-        pad: Pad,
-        prev: T,
+        prev_mask: T,
     ) -> io::Result<()> {
         let root_mask = items
             .iter()
             .fold(T::ones(), |mask, i| mask.bit_and(i.mask()))
-            .bit_andn(&prev);
-        let next_mask = prev.bit_or(&root_mask);
+            .bit_andn(&prev_mask);
+        let next_mask = prev_mask.bit_or(&root_mask);
 
         let map = {
             let mut map = HashMap::<_, Vec<_>>::new();
@@ -547,24 +554,23 @@ where
         let mut map: Vec<_> = map.into_iter().collect();
         map.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())));
 
+        pad.right();
         for (opcode, items) in map {
-            let pad = pad.shift();
-
             let mask = items[0].mask();
             if !items.iter().all(|i| mask == i.mask()) {
                 writeln!(out, "{pad}{:#x} => {{", opcode)?;
-                self.gen_decode_group_items(out, items, pad.shift(), next_mask)?;
+                self.gen_decode_group_items(out, pad.shift(), items, next_mask)?;
             } else {
-                let mut pad = pad;
                 write!(out, "{pad}{:#x} ", opcode)?;
 
                 let m = mask.bit_andn(&next_mask);
                 writeln!(out, "=> {{")?;
-                pad = pad.shift();
+
+                pad.right();
                 writeln!(out, "{pad}match insn & {m:#x} {{")?;
 
+                pad.right();
                 for i in &items {
-                    let pad = pad.shift();
                     match i {
                         Item::Pattern(pat) => {
                             // TODO: comment file:line
@@ -586,14 +592,17 @@ where
                         }
                     }
                 }
+                writeln!(out, "{pad}_ => {{}}")?;
+                pad.left();
 
-                writeln!(out, "{}_ => {{}}", pad.shift())?;
                 writeln!(out, "{pad}}}")?;
+                pad.left();
             }
             writeln!(out, "{pad}}}")?;
         }
+        writeln!(out, "{pad}_ => {{}}")?;
+        pad.left();
 
-        writeln!(out, "{}_ => {{}}", pad.shift())?;
         writeln!(out, "{pad}}} // match insn & {root_mask:#x}")?;
 
         Ok(())
@@ -638,23 +647,25 @@ where
         prev: T,
     ) -> io::Result<()> {
         let items = group.items.iter().collect();
-        self.gen_decode_group_items(out, items, pad, prev)
+        self.gen_decode_group_items(out, pad, items, prev)
     }
 
-    fn gen_decode<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+    fn gen_decode<W: Write>(&mut self, out: &mut W, mut pad: Pad) -> io::Result<()> {
         writeln!(out, "{pad}#[inline(never)]")?;
         write!(out, "{pad}fn decode(&mut self, insn: {}", self.type_name)?;
         for (name, ty) in self.gen.additional_args() {
             write!(out, ", {name}: {ty}")?;
         }
         writeln!(out, ") -> bool {{")?;
-        self.gen_decode_group(out, pad.shift(), &self.tree.root, T::zero())?;
+        pad.right();
+        self.gen_decode_group(out, pad, &self.tree.root, T::zero())?;
         writeln!(out)?;
-        writeln!(out, "{}false", pad.shift())?;
+        writeln!(out, "{pad}false")?;
+        pad.left();
         writeln!(out, "{pad}}}")
     }
 
-    fn gen_trait<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+    fn gen_trait<W: Write>(&mut self, out: &mut W, mut pad: Pad) -> io::Result<()> {
         // TODO: fix clippy lints for generated code
         writeln!(out, "#[allow(clippy::collapsible_if)]")?;
         writeln!(out, "#[allow(clippy::single_match)]")?;
@@ -666,17 +677,18 @@ where
             writeln!(out, "#[allow(unused_variables)]")?;
         }
         writeln!(out, "{pad}pub trait {}: Sized {{", self.trait_name)?;
-        let p = pad.shift();
-        self.gen_extern_func_proto(out, p)?;
-        self.gen_extract_fields(out, p)?;
-        self.gen_comment(out, p, "Translations")?;
-        self.gen_trans_proto_group(out, p, &self.tree.root)?;
-        self.gen_cond_proto(out, p)?;
-        self.gen_comment(out, p, "Decode function")?;
-        self.gen_decode(out, p)?;
+        pad.right();
+        self.gen_extern_func_proto(out, pad)?;
+        self.gen_extract_fields(out, pad)?;
+        self.gen_comment(out, pad, "Translations")?;
+        self.gen_trans_proto_group(out, pad, &self.tree.root)?;
+        self.gen_cond_proto(out, pad)?;
+        self.gen_comment(out, pad, "Decode function")?;
+        self.gen_decode(out, pad)?;
         writeln!(out)?;
-        self.gen_comment(out, p, "Extern gen trait body")?;
-        self.gen.gen_trait_body(out, p)?;
+        self.gen_comment(out, pad, "Extern gen trait body")?;
+        self.gen.gen_trait_body(out, pad)?;
+        pad.left();
         writeln!(out, "{pad}}}")
     }
 

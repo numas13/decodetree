@@ -182,9 +182,10 @@ where
         use parse::PatternItem as E;
 
         let mut pat = Pattern {
+            name: def.name,
             mask: I::zero(),
             opcode: I::zero(),
-            name: def.name,
+            size: 0,
             args: vec![],
             cond: vec![],
         };
@@ -227,33 +228,32 @@ where
             }
         }
 
-        let mut pos = 0;
         for i in def.items.iter().rev() {
             match i {
                 E::FixedBits(i) => {
                     for c in i.chars().rev() {
-                        pat.mask.set_bit(pos, c == '0' || c == '1');
-                        pat.opcode.set_bit(pos, c == '1');
-                        pos += 1;
+                        pat.mask.set_bit(pat.size, c == '0' || c == '1');
+                        pat.opcode.set_bit(pat.size, c == '1');
+                        pat.size += 1;
                     }
                 }
                 E::FixedField(i) => {
                     let field = UnnamedField {
-                        pos,
+                        pos: pat.size,
                         len: i.len(),
                         sxt: i.sign_extend(),
                     };
                     pat.args_push(Value::new_field(i.name, Field::Field(field)));
-                    pos += i.len();
+                    pat.size += i.len();
                 }
                 _ => {}
             }
         }
 
-        if pos > self.insn_size {
-            self.errors.overflow(def.name, self.insn_size, pos);
-        } else if pos == 0 || (self.is_fixed_insn && pos != self.insn_size) {
-            self.errors.insn_size(def.name, self.insn_size, pos);
+        if pat.size > self.insn_size {
+            self.errors.overflow(def.name, self.insn_size, pat.size);
+        } else if pat.size == 0 || (self.is_fixed_insn && pat.size != self.insn_size) {
+            self.errors.insn_size(def.name, self.insn_size, pat.size);
         }
 
         if !is_format {
@@ -474,9 +474,10 @@ where
 
     fn convert_pattern(&self, pat: &Pattern<'src, I>) -> Pattern<I, S> {
         Pattern {
+            name: S::from(&pat.name),
             mask: pat.mask,
             opcode: pat.opcode,
-            name: S::from(&pat.name),
+            size: pat.size,
             args: pat.args.iter().map(|i| self.convert_value(i)).collect(),
             cond: pat
                 .cond

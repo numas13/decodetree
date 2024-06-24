@@ -322,6 +322,7 @@ pub struct Pattern<I = DefaultInsn, S = Str> {
     name: S,
     mask: I,
     opcode: I,
+    size: u32,
     args: Vec<Value<S>>,
     cond: Vec<Cond<S>>,
 }
@@ -337,6 +338,11 @@ impl<I, S> Pattern<I, S> {
 
     pub fn opcode(&self) -> &I {
         &self.opcode
+    }
+
+    #[allow(clippy::len_without_is_empty)]
+    pub fn size(&self) -> u32 {
+        self.size
     }
 
     pub fn args(&self) -> &[Value<S>] {

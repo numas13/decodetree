@@ -440,7 +440,7 @@ where
                 } else {
                     &self.zextract
                 };
-                writeln!(out, "{func}(insn, {pos}, {len}) as isize")?;
+                write!(out, "{func}(insn, {pos}, {len}) as isize")?;
             }
         }
         Ok(())

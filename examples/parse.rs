@@ -107,7 +107,7 @@ fn dump_value(value: &decodetree::Value) {
 
 fn dump_pattern(_tree: &DecodeTree, pat: &Pattern, depth: usize) {
     align(depth);
-    print!("{:04x}:{:04x} ", pat.opcode(), pat.mask());
+    print!("{:04x}:{:04x}:{:<2} ", pat.opcode(), pat.mask(), pat.size());
     print!("{}", pat.name());
     for arg in pat.args() {
         print!(" ");

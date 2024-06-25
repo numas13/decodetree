@@ -373,19 +373,19 @@ where
 
         assert!(!group.overlap);
 
-        let mut mask = I::ones();
+        let mut mask = I::zero();
         let mut items = vec![];
 
         for i in group.items.iter() {
             let e = match i {
                 E::PatternDef(def) => {
                     let p = self.create_pattern(def, false);
-                    mask = mask.bit_and(&p.mask);
+                    mask = mask.bit_or(&p.mask);
                     Item::Pattern(p)
                 }
                 E::Group(group) => {
                     let g = self.create_overlap_group(group);
-                    mask = mask.bit_and(&g.mask);
+                    mask = mask.bit_or(&g.mask);
                     Item::Overlap(Box::new(g))
                 }
             };
@@ -403,7 +403,11 @@ where
             }
         }
 
-        Group { mask, items }
+        Group {
+            mask,
+            opcode: I::zero(),
+            items,
+        }
     }
 
     fn convert_field_def(&self, field: &FieldDef<'src>) -> FieldDef<S> {
@@ -513,24 +517,16 @@ where
         match item {
             Item::Pattern(pattern) => Item::Pattern(self.convert_pattern(pattern)),
             Item::Overlap(group) => Item::Overlap(Box::new(self.convert_overlap(group))),
+            Item::Group(group) => Item::Group(Box::new(self.convert_group(group))),
         }
     }
 
     fn convert_group(&self, group: &Group<'src, I>) -> Group<I, S> {
-        let mut items: Vec<_> = group.items.iter().map(|i| self.convert_item(i)).collect();
-
-        items.sort_by(|a, b| {
-            let opc_a = a.opcode().bit_and(&group.mask);
-            let opc_b = b.opcode().bit_and(&group.mask);
-            opc_a.cmp(&opc_b).then_with(|| {
-                let opc_a = a.opcode().bit_and(a.mask());
-                let opc_b = b.opcode().bit_and(b.mask());
-                opc_a.cmp(&opc_b)
-            })
-        });
+        let items = group.items.iter().map(|i| self.convert_item(i)).collect();
 
         Group {
             mask: group.mask,
+            opcode: I::zero(),
             items,
         }
     }
@@ -572,7 +568,9 @@ where
                 self.args.into_values().map(|i| i.into()).collect();
             args.sort_by(|a, b| a.name.cmp(&b.name));
 
-            Ok(DecodeTree { fields, args, root })
+            let mut tree = DecodeTree { fields, args, root };
+            tree.root.optimize(I::zero());
+            Ok(tree)
         } else {
             Err(self.errors)
         }

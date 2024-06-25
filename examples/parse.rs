@@ -139,11 +139,12 @@ fn dump_overlap(tree: &DecodeTree, overlap: &Overlap, depth: usize) {
 fn dump_group(tree: &DecodeTree, group: &Group, depth: usize) {
     use decodetree::Item as E;
     align(depth);
-    println!("[ # {:04x}", group.mask());
+    println!("[ # {:04x}:{:04x}", group.opcode(), group.mask());
     for item in group.iter() {
         match item {
             E::Pattern(pattern) => dump_pattern(tree, pattern, depth + 1),
             E::Overlap(overlap) => dump_overlap(tree, overlap, depth + 1),
+            E::Group(group) => dump_group(tree, group, depth + 1),
         }
     }
     align(depth);

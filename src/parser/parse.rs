@@ -576,12 +576,21 @@ impl<'a> Group<'a> {
         }
     }
 
-    pub fn push_group(&mut self, other: Box<Group<'a>>) {
+    pub fn push_group(&mut self, mut other: Box<Group<'a>>) {
         if other.items.is_empty() {
             return;
         }
-        if self.overlap == other.overlap {
-            self.items.extend_from_slice(&other.items);
+
+        if other.items.len() == 1 {
+            let item = other.items.remove(0);
+            match item {
+                GroupItem::PatternDef(..) => self.items.push(item),
+                // NOTE: Pattern will travel up to the top if parent groups
+                // does not have any other patterns.
+                GroupItem::Group(..) => unreachable!(),
+            }
+        } else if self.overlap == other.overlap {
+            self.items.append(&mut other.items);
         } else {
             self.items.push(GroupItem::Group(other));
         }

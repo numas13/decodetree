@@ -4,7 +4,7 @@ mod parser;
 #[cfg(feature = "gen")]
 pub mod gen;
 
-use std::{fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::Rc};
+use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::Rc};
 
 use crate::parser::Span;
 
@@ -445,10 +445,12 @@ pub struct Overlap<I = DefaultInsn, S = Str> {
 }
 
 impl<I, S> Overlap<I, S> {
+    /// Shared mask for all child items.
     pub fn mask(&self) -> &I {
         &self.mask
     }
 
+    /// Shared opcode for all child items.
     pub fn opcode(&self) -> &I {
         &self.opcode
     }
@@ -469,10 +471,27 @@ impl<I, S> Overlap<I, S> {
     }
 }
 
+impl<I: Insn, S> Overlap<I, S> {
+    fn optimize(&mut self, mask: I) {
+        for item in &mut self.items {
+            match item {
+                OverlapItem::Pattern(pattern) => {
+                    pattern.mask = pattern.mask.bit_andn(&mask);
+                    pattern.opcode = pattern.opcode.bit_and(&pattern.mask);
+                }
+                OverlapItem::Group(group) => {
+                    group.optimize(mask);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Item<I, S = Str> {
     Pattern(Pattern<I, S>),
     Overlap(Box<Overlap<I, S>>),
+    Group(Box<Group<I, S>>),
 }
 
 impl<I, S> Item<I, S> {
@@ -480,6 +499,7 @@ impl<I, S> Item<I, S> {
         match self {
             Self::Pattern(i) => &i.opcode,
             Self::Overlap(i) => &i.opcode,
+            Self::Group(i) => &i.opcode,
         }
     }
 
@@ -487,6 +507,7 @@ impl<I, S> Item<I, S> {
         match self {
             Self::Pattern(i) => &i.mask,
             Self::Overlap(i) => &i.mask,
+            Self::Group(i) => &i.mask,
         }
     }
 
@@ -494,6 +515,7 @@ impl<I, S> Item<I, S> {
         match self {
             Self::Pattern(pattern) => pattern,
             Self::Overlap(overlap) => overlap.first_pattern(),
+            Self::Group(group) => group.first_pattern(),
         }
     }
 }
@@ -501,12 +523,19 @@ impl<I, S> Item<I, S> {
 #[derive(Clone, Debug, Default)]
 pub struct Group<I = DefaultInsn, S = Str> {
     mask: I,
+    opcode: I,
     items: Vec<Item<I, S>>,
 }
 
 impl<I, S> Group<I, S> {
+    /// Shared mask for all child items.
     pub fn mask(&self) -> &I {
         &self.mask
+    }
+
+    /// Shared opcode for all child items.
+    pub fn opcode(&self) -> &I {
+        &self.opcode
     }
 
     pub fn as_slice(&self) -> &[Item<I, S>] {
@@ -522,6 +551,57 @@ impl<I, S> Group<I, S> {
             .first()
             .expect("group must not be empty")
             .first_pattern()
+    }
+}
+
+impl<I: Insn, S> Group<I, S> {
+    fn optimize(&mut self, mask: I) {
+        self.mask = self
+            .items
+            .iter()
+            .fold(I::ones(), |mask, i| mask.bit_and(i.mask()))
+            .bit_andn(&mask);
+        let nested_mask = mask.bit_or(&self.mask);
+
+        let mut map = HashMap::<_, Vec<_>>::new();
+        for i in mem::take(&mut self.items) {
+            map.entry(i.opcode().bit_and(&self.mask))
+                .or_default()
+                .push(i);
+        }
+
+        let mut items: Vec<_> = map.into_iter().collect();
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (opcode, mut items) in items.into_iter() {
+            let item = if items.len() == 1 {
+                let mut item = items.remove(0);
+                match &mut item {
+                    Item::Pattern(pattern) => {
+                        pattern.mask = pattern.mask.bit_andn(&mask);
+                        pattern.opcode = pattern.opcode.bit_and(&pattern.mask);
+                    }
+                    Item::Overlap(overlap) => {
+                        overlap.mask = overlap.mask.bit_andn(&mask);
+                        overlap.opcode = overlap.opcode.bit_and(&overlap.mask);
+                        overlap.optimize(nested_mask);
+                    }
+                    Item::Group(..) => {
+                        unreachable!("parser must flatten the tree");
+                    }
+                }
+                item
+            } else {
+                let mut group = Group {
+                    mask: I::zero(),
+                    opcode,
+                    items,
+                };
+                group.optimize(nested_mask);
+                Item::Group(Box::new(group))
+            };
+            self.items.push(item);
+        }
     }
 }
 

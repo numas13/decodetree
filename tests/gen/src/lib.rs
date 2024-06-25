@@ -4,5 +4,5 @@ mod utils;
 pub mod decode32 {
     use crate::utils::zextract;
 
-    include!(concat!(env!("OUT_DIR"), "/decode32.rs"));
+    include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 }

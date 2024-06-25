@@ -1,3 +1,5 @@
+//! Code generator for decodetree.
+
 use std::{
     collections::HashSet,
     fmt,
@@ -11,19 +13,23 @@ use crate::{
     OverlapItem, Pattern, Str, ValueKind,
 };
 
+/// Helper to align generated code.
 #[derive(Copy, Clone)]
 pub struct Pad(usize);
 
 impl Pad {
+    /// Shift padding to the right.
     pub fn shift(self) -> Self {
         Self(self.0 + 4)
     }
 
+    /// Shift padding to the right in-place.
     pub fn right(&mut self) -> Self {
         self.0 += 4;
         *self
     }
 
+    /// Shift padding to the left in-place.
     pub fn left(&mut self) -> Self {
         assert!(self.0 >= 4);
         self.0 -= 4;
@@ -41,17 +47,36 @@ impl fmt::Display for Pad {
     }
 }
 
+/// Hooks to generate custom code.
 #[allow(unused_variables)]
 pub trait Gen<T, S = Str> {
-    fn pass_arg(&self, name: &str) -> bool {
-        true
-    }
-
-    fn additional_args(&self) -> &[(&str, &str)] {
+    /// Additional attributes for trait.
+    fn trait_attrs(&self) -> &[&str] {
         &[]
     }
 
-    fn gen_trans_body<W: Write>(
+    /// Use to generate code inside trait.
+    fn trait_body<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Additional attributes for trans functions.
+    fn trans_attrs(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Filter arguments to trans functions.
+    fn trans_check_arg(&self, name: &str) -> bool {
+        true
+    }
+
+    /// Additional arguments to pass to trans functions.
+    fn trans_args(&self) -> &[(&str, &str)] {
+        &[]
+    }
+
+    /// Use to generate default implementation of trans functions.
+    fn trans_body<W: Write>(
         &mut self,
         out: &mut W,
         pad: Pad,
@@ -60,7 +85,8 @@ pub trait Gen<T, S = Str> {
         Ok(false)
     }
 
-    fn gen_on_success<W: Write>(
+    /// Use to generate code after successful trans function.
+    fn trans_success<W: Write>(
         &mut self,
         out: &mut W,
         pad: Pad,
@@ -69,26 +95,15 @@ pub trait Gen<T, S = Str> {
         Ok(())
     }
 
-    fn gen_trait_body<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn gen_opcodes<W: Write>(
-        &mut self,
-        out: &mut W,
-        pad: Pad,
-        opcodes: &HashSet<&str>,
-    ) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn gen_end<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
+    /// Use to generate code outside of the Decode trait.
+    fn end<W: Write>(&mut self, out: &mut W, pad: Pad, opcodes: &HashSet<&str>) -> io::Result<()> {
         Ok(())
     }
 }
 
 impl<T> Gen<T> for () {}
 
+/// Generator builder.
 pub struct GeneratorBuilder {
     trait_name: Str,
     type_name: Option<Str>,
@@ -110,31 +125,37 @@ impl Default for GeneratorBuilder {
 }
 
 impl GeneratorBuilder {
+    /// Override Decode trait name.
     pub fn trait_name(mut self, s: &str) -> Self {
         self.trait_name = s.into();
         self
     }
 
-    pub fn type_name(mut self, s: &str) -> Self {
+    /// Override instruction type.
+    pub fn insn_type(mut self, s: &str) -> Self {
         self.type_name = Some(s.into());
         self
     }
 
-    pub fn zextract(mut self, func: &str) -> Self {
-        self.zextract = func.into();
+    /// Override zero-extend extract function.
+    pub fn zextract(mut self, name: &str) -> Self {
+        self.zextract = name.into();
         self
     }
 
-    pub fn sextract(mut self, func: &str) -> Self {
-        self.sextract = func.into();
+    /// Override sign-extend extract function.
+    pub fn sextract(mut self, name: &str) -> Self {
+        self.sextract = name.into();
         self
     }
 
+    /// Generate default functions implementations.
     pub fn stubs(mut self, stubs: bool) -> Self {
         self.stubs = stubs;
         self
     }
 
+    /// Build the `Generator`.
     pub fn build<T, S, G>(self, tree: &DecodeTree<T, S>, gen: G) -> Generator<T, S, G>
     where
         T: Insn,
@@ -156,6 +177,7 @@ impl GeneratorBuilder {
     }
 }
 
+/// Decodetree generator.
 pub struct Generator<'a, T = super::DefaultInsn, S = Str, G = ()> {
     trait_name: Str,
     type_name: Str,
@@ -169,6 +191,7 @@ pub struct Generator<'a, T = super::DefaultInsn, S = Str, G = ()> {
 }
 
 impl Generator<'_> {
+    /// Create builder object for `Generator`.
     pub fn builder() -> GeneratorBuilder {
         GeneratorBuilder::default()
     }
@@ -205,13 +228,13 @@ where
         }
 
         write!(out, "{pad}fn trans_{}(&mut self", pattern.name)?;
-        for (name, ty) in self.gen.additional_args() {
+        for (name, ty) in self.gen.trans_args() {
             write!(out, ", {name}: {ty}")?;
         }
         for value in pattern
             .args
             .iter()
-            .filter(|i| self.gen.pass_arg(i.name().as_ref()))
+            .filter(|i| self.gen.trans_check_arg(i.name().as_ref()))
         {
             let name = value.name();
             write!(out, ", {name}: ")?;
@@ -223,7 +246,7 @@ where
         }
         write!(out, ") -> bool")?;
 
-        if self.gen.gen_trans_body(out, pad, pattern)? {
+        if self.gen.trans_body(out, pad, pattern)? {
             writeln!(out)?;
             return Ok(());
         }
@@ -488,7 +511,7 @@ where
         i: &Pattern<T, S>,
         pad: Pad,
     ) -> io::Result<()> {
-        for arg in i.args.iter().filter(|i| self.gen.pass_arg(i.name())) {
+        for arg in i.args.iter().filter(|i| self.gen.trans_check_arg(i.name())) {
             let name = arg.name();
             match arg.kind() {
                 ValueKind::Args(set) => {
@@ -527,14 +550,18 @@ where
     ) -> io::Result<()> {
         self.gen_extract_args(out, pattern, pad)?;
         write!(out, "{pad}if Self::trans_{}(self", pattern.name)?;
-        for (name, _) in self.gen.additional_args() {
+        for (name, _) in self.gen.trans_args() {
             write!(out, ", {name}")?;
         }
-        for arg in pattern.args.iter().filter(|i| self.gen.pass_arg(i.name())) {
+        for arg in pattern
+            .args
+            .iter()
+            .filter(|i| self.gen.trans_check_arg(i.name()))
+        {
             write!(out, ", {}", arg.name())?;
         }
         writeln!(out, ") {{")?;
-        self.gen.gen_on_success(out, pad.shift(), pattern)?;
+        self.gen.trans_success(out, pad.shift(), pattern)?;
         writeln!(out, "{}return true;", pad.shift())?;
         writeln!(out, "{pad}}}")?;
         Ok(())
@@ -663,7 +690,7 @@ where
 
     fn gen_decode<W: Write>(&mut self, out: &mut W, mut pad: Pad) -> io::Result<()> {
         write!(out, "{pad}fn decode(&mut self, insn: {}", self.type_name)?;
-        for (name, ty) in self.gen.additional_args() {
+        for (name, ty) in self.gen.trans_args() {
             write!(out, ", {name}: {ty}")?;
         }
         writeln!(out, ") -> bool {{")?;
@@ -676,36 +703,40 @@ where
     }
 
     fn gen_trait<W: Write>(&mut self, out: &mut W, mut pad: Pad) -> io::Result<()> {
+        for attr in self.gen.trait_attrs() {
+            writeln!(out, "{pad}{attr}")?;
+        }
         if self.stubs {
             writeln!(out, "#[allow(unused_variables)]")?;
         }
+        writeln!(out, "#[allow(clippy::unnecessary_cast)]")?;
+        writeln!(out, "#[allow(clippy::collapsible_if)]")?;
         writeln!(out, "{pad}pub trait {}: Sized {{", self.trait_name)?;
         pad.right();
         self.gen_extern_func_proto(out, pad)?;
         self.gen_extract_fields(out, pad)?;
         if !self.tree.root.as_slice().len() != 0 {
-            self.gen_comment(out, pad, "Translations")?;
+            self.gen_comment(out, pad, "Translation functions")?;
             self.gen_trans_proto_group(out, pad, &self.tree.root)?;
             self.gen_cond_proto(out, pad)?;
             self.gen_comment(out, pad, "Decode function")?;
             self.gen_decode(out, pad)?;
             writeln!(out)?;
         }
-        self.gen_comment(out, pad, "Extern gen trait body")?;
-        self.gen.gen_trait_body(out, pad)?;
+        self.gen_comment(out, pad, "Generated user code for trait")?;
+        self.gen.trait_body(out, pad)?;
         pad.left();
         writeln!(out, "{pad}}}")
     }
 
+    /// Generate code.
     pub fn generate<W: Write>(&mut self, mut out: W) -> io::Result<()> {
         let pad = Pad(0);
         let out = &mut out;
         self.gen_args(out, pad)?;
         self.gen_trait(out, pad)?;
         writeln!(out)?;
-        self.gen_comment(out, pad, "Extern gen opcodes")?;
-        self.gen.gen_opcodes(out, pad, &self.opcodes)?;
-        self.gen_comment(out, pad, "Extern gen end")?;
-        self.gen.gen_end(out, pad)
+        self.gen_comment(out, pad, "Generated user code")?;
+        self.gen.end(out, pad, &self.opcodes)
     }
 }

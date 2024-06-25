@@ -20,8 +20,6 @@ type DefaultInsn = u32;
 pub type Str = Box<str>;
 
 pub trait Insn: Sized + Copy + Clone + Eq + Ord + Hash + LowerHex + Default {
-    // TODO: zero_extract
-    // TODO: sign_extract
     fn width() -> u32;
     fn zero() -> Self;
     fn ones() -> Self;
@@ -522,6 +520,7 @@ impl<I, S> Item<I, S> {
     }
 }
 
+/// Container for non-overlap patterns or groups.
 #[derive(Clone, Debug, Default)]
 pub struct Group<I = DefaultInsn, S = Str> {
     mask: I,
@@ -530,20 +529,22 @@ pub struct Group<I = DefaultInsn, S = Str> {
 }
 
 impl<I, S> Group<I, S> {
-    /// Shared mask for all child items.
+    /// Mask for instruction to match with `opcode`.
     pub fn mask(&self) -> &I {
         &self.mask
     }
 
-    /// Shared opcode for all child items.
+    /// Opcode to match with masked instruction.
     pub fn opcode(&self) -> &I {
         &self.opcode
     }
 
+    /// Returns a slice containing all childs of the group.
     pub fn as_slice(&self) -> &[Item<I, S>] {
         self.items.as_slice()
     }
 
+    /// Returns an iterator over the group.
     pub fn iter(&self) -> impl Iterator<Item = &Item<I, S>> {
         self.items.iter()
     }
@@ -557,7 +558,8 @@ impl<I, S> Group<I, S> {
 }
 
 impl<I: Insn, S> Group<I, S> {
-    fn shared_mask(&self) -> I {
+    /// Returns shared bits for all child items.
+    pub fn shared_mask(&self) -> I {
         self.items
             .iter()
             .fold(I::ones(), |mask, i| mask.bit_and(i.mask()))
@@ -603,20 +605,26 @@ impl<I: Insn, S> Group<I, S> {
     }
 }
 
+/// Container for fields, args and patterns.
 #[derive(Clone, Debug, Default)]
 pub struct DecodeTree<I = DefaultInsn, S = Str> {
+    /// Fields definitions.
     pub fields: Vec<Rc<FieldDef<S>>>,
+    /// Argument Sets definitions.
     pub args: Vec<ArgsDef<S>>,
+    /// Root for all patterns.
     pub root: Group<I, S>,
 }
 
 impl<I: Insn, S> DecodeTree<I, S> {
+    /// Optimize tree.
     pub fn optimize(&mut self) {
         self.root.optimize();
     }
 }
 
-pub fn parse<I>(src: &str) -> Result<DecodeTree<I, Str>, Errors>
+/// Build decodetree from a string.
+pub fn from_str<I>(src: &str) -> Result<DecodeTree<I, Str>, Errors>
 where
     I: Insn,
 {

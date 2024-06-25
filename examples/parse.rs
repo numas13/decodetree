@@ -100,12 +100,16 @@ fn dump_value(value: &decodetree::Value) {
             dump_field(field);
         }
         E::Const(value) => {
-            println!("{name}={value}");
+            print!("{name}={value}");
         }
     }
 }
 
 fn dump_pattern(_tree: &DecodeTree, pat: &Pattern, depth: usize) {
+    for line in pat.raw().lines() {
+        align(depth);
+        println!("# {line}");
+    }
     align(depth);
     print!("{:04x}:{:04x}:{:<2} ", pat.opcode(), pat.mask(), pat.size());
     print!("{}", pat.name());

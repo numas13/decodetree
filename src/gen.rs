@@ -287,7 +287,7 @@ where
         for i in &group.items {
             self.gen_trans_proto_group_item(out, pad, i)?;
         }
-        Ok(())
+        writeln!(out)
     }
 
     fn gen_cond_proto<W: Write>(&mut self, out: &mut W, pad: Pad) -> io::Result<()> {
@@ -507,6 +507,18 @@ where
         Ok(())
     }
 
+    fn gen_pattern_comment<W: Write>(
+        &mut self,
+        out: &mut W,
+        pad: Pad,
+        pattern: &Pattern<T, S>,
+    ) -> io::Result<()> {
+        for line in pattern.raw().lines() {
+            writeln!(out, "{pad}// {line}")?;
+        }
+        Ok(())
+    }
+
     fn gen_call_trans_func<W: Write>(
         &mut self,
         out: &mut W,
@@ -554,6 +566,7 @@ where
         for i in &group.items {
             match i {
                 OverlapItem::Pattern(pat) => {
+                    self.gen_pattern_comment(out, pad, pat)?;
                     let mask = pat.mask.bit_andn(&prev);
                     let is_mask_non_zero = mask != T::zero();
                     let do_if = is_mask_non_zero || pat.has_conditions();
@@ -595,17 +608,18 @@ where
         group: &Group<T, S>,
         prev: T,
     ) -> io::Result<()> {
-        let shared = group
-            .iter()
-            .fold(T::ones(), |mask, i| mask.bit_and(i.mask()))
-            .bit_andn(&prev);
+        let shared = group.shared_mask().bit_andn(&prev);
 
         writeln!(out, "{pad}match insn & {shared:#x} {{")?;
         pad.right();
 
         for item in &group.items {
+            if let Item::Pattern(pattern) = item {
+                self.gen_pattern_comment(out, pad, pattern)?;
+            }
+
             write!(out, "{pad}{:#x}", item.opcode().bit_and(&shared))?;
-            let exclusive = item.mask().bit_andn(&shared);
+            let exclusive = item.mask().bit_andn(&shared).bit_andn(&prev);
             if exclusive != T::zero() {
                 let exclusive_opcode = item.opcode().bit_and(&exclusive);
                 write!(out, " if insn & {exclusive:#x} == {exclusive_opcode:#x}")?;
@@ -673,7 +687,6 @@ where
             self.gen_comment(out, pad, "Translations")?;
             self.gen_trans_proto_group(out, pad, &self.tree.root)?;
             self.gen_cond_proto(out, pad)?;
-            writeln!(out)?;
             self.gen_comment(out, pad, "Decode function")?;
             self.gen_decode(out, pad)?;
             writeln!(out)?;

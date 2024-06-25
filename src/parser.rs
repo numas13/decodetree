@@ -182,6 +182,7 @@ where
         use parse::PatternItem as E;
 
         let mut pat = Pattern {
+            raw: def.raw,
             name: def.name,
             mask: I::zero(),
             opcode: I::zero(),
@@ -478,6 +479,7 @@ where
 
     fn convert_pattern(&self, pat: &Pattern<'src, I>) -> Pattern<I, S> {
         Pattern {
+            raw: S::from(&pat.raw),
             name: S::from(&pat.name),
             mask: pat.mask,
             opcode: pat.opcode,

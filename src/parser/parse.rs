@@ -7,9 +7,9 @@ use nom::{
         digit1, hex_digit1, line_ending, multispace0, not_line_ending, one_of, satisfy, space0,
         space1,
     },
-    combinator::{cut, eof, fail, map, opt, recognize, success, value, verify},
+    combinator::{consumed, cut, eof, fail, map, opt, recognize, success, value, verify},
     multi::{fold_many0, many0, many0_count, many1, many1_count},
-    sequence::{delimited, pair, preceded, separated_pair, terminated},
+    sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
     Finish,
 };
 use nom_locate::LocatedSpan;
@@ -447,10 +447,13 @@ fn format_item(s: Span) -> IResult<FormatItem> {
 pub type FormatDef<'a> = PatternDef<'a>;
 
 fn format_def(s: Span) -> IResult<FormatDef> {
-    let (s, name) = format_name(s)?;
-    let (s, items) = cut(many1(preceded(sp1, format_item)))(s)?;
-    let (s, cond) = preceded(sp0, cond_list)(s)?;
-    Ok((s, FormatDef::new(name, items, cond)))
+    let parser = tuple((
+        format_name,
+        cut(many1(preceded(sp1, format_item))),
+        preceded(sp0, cond_list),
+    ));
+    let (s, (raw, (name, items, cond))) = consumed(parser)(s)?;
+    Ok((s, FormatDef::new(raw, name, items, cond)))
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -527,22 +530,36 @@ fn pattern_item(s: Span) -> IResult<PatternItem> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PatternDef<'a> {
+    pub raw: Span<'a>,
     pub name: Span<'a>,
     pub items: Vec<PatternItem<'a>>,
     pub cond: Vec<Cond<'a>>,
 }
 
 impl<'a> PatternDef<'a> {
-    fn new(name: Span<'a>, items: Vec<PatternItem<'a>>, cond: Vec<Cond<'a>>) -> Self {
-        Self { name, items, cond }
+    fn new(
+        raw: Span<'a>,
+        name: Span<'a>,
+        items: Vec<PatternItem<'a>>,
+        cond: Vec<Cond<'a>>,
+    ) -> Self {
+        Self {
+            raw,
+            name,
+            items,
+            cond,
+        }
     }
 }
 
 fn pattern_def(s: Span) -> IResult<PatternDef> {
-    let (s, name) = identifier(s)?;
-    let (s, items) = cut(many1(preceded(sp1, pattern_item)))(s)?;
-    let (s, cond) = preceded(sp0, cond_list)(s)?;
-    Ok((s, PatternDef::new(name, items, cond)))
+    let parser = tuple((
+        identifier,
+        cut(many1(preceded(sp1, pattern_item))),
+        preceded(sp0, cond_list),
+    ));
+    let (s, (raw, (name, items, cond))) = consumed(parser)(s)?;
+    Ok((s, PatternDef::new(raw, name, items, cond)))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -714,6 +731,7 @@ mod tests {
         assert_eq!(Ok((
             span!(s[34; 0]),
             FormatDef {
+                raw: span!(s[0; 34]),
                 name: span!(s[1; 4]),
                 items: vec![
                     FormatItem::fixed_bits(span!(s[6; 4])),
@@ -734,6 +752,7 @@ mod tests {
         assert_eq!(Ok((
             span!(s[36; 0]),
             PatternDef {
+                raw: span!(s[0; 36]),
                 name: span!(s[0; 4]),
                 items: vec![
                     PatternItem::fixed_bits(span!(s[5; 4])),

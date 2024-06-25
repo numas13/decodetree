@@ -319,6 +319,7 @@ impl<S> Cond<S> {
 
 #[derive(Clone, Debug)]
 pub struct Pattern<I = DefaultInsn, S = Str> {
+    raw: S,
     name: S,
     mask: I,
     opcode: I,
@@ -328,6 +329,10 @@ pub struct Pattern<I = DefaultInsn, S = Str> {
 }
 
 impl<I, S> Pattern<I, S> {
+    pub fn raw(&self) -> &S {
+        &self.raw
+    }
+
     pub fn name(&self) -> &S {
         &self.name
     }
@@ -552,15 +557,18 @@ impl<I, S> Group<I, S> {
 }
 
 impl<I: Insn, S> Group<I, S> {
-    fn optimize(&mut self) {
-        self.mask = self
-            .items
+    fn shared_mask(&self) -> I {
+        self.items
             .iter()
-            .fold(I::ones(), |mask, i| mask.bit_and(i.mask()));
+            .fold(I::ones(), |mask, i| mask.bit_and(i.mask()))
+    }
+
+    fn optimize(&mut self) {
+        let shared_mask = self.shared_mask();
 
         let mut map = HashMap::<_, Vec<_>>::new();
         for i in mem::take(&mut self.items) {
-            map.entry(i.opcode().bit_and(&self.mask))
+            map.entry(i.opcode().bit_and(&shared_mask))
                 .or_default()
                 .push(i);
         }
@@ -583,7 +591,7 @@ impl<I: Insn, S> Group<I, S> {
                 item
             } else {
                 let mut group = Group {
-                    mask: I::zero(),
+                    mask: shared_mask,
                     opcode,
                     items,
                 };

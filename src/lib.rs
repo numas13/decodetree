@@ -472,15 +472,12 @@ impl<I, S> Overlap<I, S> {
 }
 
 impl<I: Insn, S> Overlap<I, S> {
-    fn optimize(&mut self, mask: I) {
+    fn optimize(&mut self) {
         for item in &mut self.items {
             match item {
-                OverlapItem::Pattern(pattern) => {
-                    pattern.mask = pattern.mask.bit_andn(&mask);
-                    pattern.opcode = pattern.opcode.bit_and(&pattern.mask);
-                }
+                OverlapItem::Pattern(_) => {}
                 OverlapItem::Group(group) => {
-                    group.optimize(mask);
+                    group.optimize();
                 }
             }
         }
@@ -555,13 +552,11 @@ impl<I, S> Group<I, S> {
 }
 
 impl<I: Insn, S> Group<I, S> {
-    fn optimize(&mut self, mask: I) {
+    fn optimize(&mut self) {
         self.mask = self
             .items
             .iter()
-            .fold(I::ones(), |mask, i| mask.bit_and(i.mask()))
-            .bit_andn(&mask);
-        let nested_mask = mask.bit_or(&self.mask);
+            .fold(I::ones(), |mask, i| mask.bit_and(i.mask()));
 
         let mut map = HashMap::<_, Vec<_>>::new();
         for i in mem::take(&mut self.items) {
@@ -577,14 +572,9 @@ impl<I: Insn, S> Group<I, S> {
             let item = if items.len() == 1 {
                 let mut item = items.remove(0);
                 match &mut item {
-                    Item::Pattern(pattern) => {
-                        pattern.mask = pattern.mask.bit_andn(&mask);
-                        pattern.opcode = pattern.opcode.bit_and(&pattern.mask);
-                    }
+                    Item::Pattern(..) => {}
                     Item::Overlap(overlap) => {
-                        overlap.mask = overlap.mask.bit_andn(&mask);
-                        overlap.opcode = overlap.opcode.bit_and(&overlap.mask);
-                        overlap.optimize(nested_mask);
+                        overlap.optimize();
                     }
                     Item::Group(..) => {
                         unreachable!("parser must flatten the tree");
@@ -597,7 +587,7 @@ impl<I: Insn, S> Group<I, S> {
                     opcode,
                     items,
                 };
-                group.optimize(nested_mask);
+                group.optimize();
                 Item::Group(Box::new(group))
             };
             self.items.push(item);
@@ -610,6 +600,12 @@ pub struct DecodeTree<I = DefaultInsn, S = Str> {
     pub fields: Vec<Rc<FieldDef<S>>>,
     pub args: Vec<ArgsDef<S>>,
     pub root: Group<I, S>,
+}
+
+impl<I: Insn, S> DecodeTree<I, S> {
+    pub fn optimize(&mut self) {
+        self.root.optimize();
+    }
 }
 
 pub fn parse<I>(src: &str) -> Result<DecodeTree<I, Str>, Errors>

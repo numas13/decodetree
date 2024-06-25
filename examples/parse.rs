@@ -161,7 +161,10 @@ fn dump_tree(cli: &Cli, tree: &DecodeTree) {
 
 #[derive(Default)]
 struct Cli {
+    dump: bool,
     debug: bool,
+    optimize: bool,
+    generate: bool,
     path: String,
 }
 
@@ -169,7 +172,17 @@ fn parse_cli() -> Cli {
     let mut cli = Cli::default();
     for arg in env::args().skip(1) {
         match arg.as_str() {
-            "-d" | "--debug" => cli.debug = true,
+            "-d" => cli.dump = true,
+            "-D" => {
+                cli.dump = true;
+                cli.debug = true;
+            }
+            "-O" => cli.optimize = true,
+            "-g" => cli.generate = true,
+            "-h" => {
+                println!("parse -d -D -O -g path");
+                process::exit(0);
+            }
             _ => {
                 cli.path = arg;
                 return cli;
@@ -181,7 +194,11 @@ fn parse_cli() -> Cli {
 }
 
 fn main() {
-    let cli = parse_cli();
+    let mut cli = parse_cli();
+    if !cli.dump && !cli.generate {
+        cli.dump = true;
+    }
+
     let src = fs::read_to_string(&cli.path).unwrap_or_else(|err| {
         eprintln!("error: failed to read file {}", cli.path);
         eprintln!("{err:?}");
@@ -191,8 +208,39 @@ fn main() {
     let parser = Parser::new(&src).set_insn_fixed_size(false);
 
     match parser.parse() {
-        Ok(tree) if cli.debug => println!("{tree:#?}"),
-        Ok(tree) => dump_tree(&cli, &tree),
+        Ok(mut tree) => {
+            if cli.optimize {
+                tree.optimize();
+            }
+
+            if cli.dump {
+                if cli.debug {
+                    println!("{tree:#?}");
+                } else {
+                    dump_tree(&cli, &tree);
+                }
+            }
+
+            if cli.generate {
+                #[cfg(not(feature = "gen"))]
+                {
+                    eprintln!("error: build with --features gen");
+                    process::exit(1);
+                }
+
+                #[cfg(feature = "gen")]
+                {
+                    if cli.dump {
+                        println!();
+                    }
+
+                    decodetree::Generator::builder()
+                        .build(&tree, ())
+                        .generate(&mut std::io::stdout())
+                        .unwrap();
+                }
+            }
+        }
         Err(errors) => {
             for e in errors.iter(&cli.path) {
                 eprintln!("{}", e);

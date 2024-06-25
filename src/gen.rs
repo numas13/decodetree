@@ -325,10 +325,15 @@ where
     }
 
     fn gen_extern_func_proto<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
-        self.gen_comment(out, pad, "Extern functions")?;
         let mut set = HashSet::new();
+        let mut first = true;
         for i in self.tree.fields.iter().filter_map(|i| i.func.as_deref()) {
             if !set.contains(i) {
+                if first {
+                    self.gen_comment(out, pad, "Extern functions")?;
+                    first = false;
+                }
+
                 set.insert(i);
                 write!(out, "{pad}fn {i}(&mut self, value: isize) -> isize")?;
                 if self.stubs {
@@ -338,7 +343,10 @@ where
                 }
             }
         }
-        writeln!(out)
+        if !first {
+            writeln!(out)?;
+        }
+        Ok(())
     }
 
     fn gen_extract_field_body<W: Write>(
@@ -412,6 +420,9 @@ where
     }
 
     fn gen_extract_fields<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
+        if self.tree.fields.is_empty() {
+            return Ok(());
+        }
         self.gen_comment(out, pad, "Extract functions")?;
         for field in &self.tree.fields {
             let name = field.name();
@@ -570,7 +581,7 @@ where
                     }
                 }
                 OverlapItem::Group(group) => {
-                    self.gen_decode_group(out, pad, group)?;
+                    self.gen_decode_group(out, pad, group, prev)?;
                 }
             }
         }
@@ -582,12 +593,24 @@ where
         out: &mut W,
         mut pad: Pad,
         group: &Group<T, S>,
+        prev: T,
     ) -> io::Result<()> {
-        writeln!(out, "{pad}match insn & {:#x} {{", group.mask())?;
+        let shared = group
+            .iter()
+            .fold(T::ones(), |mask, i| mask.bit_and(i.mask()))
+            .bit_andn(&prev);
+
+        writeln!(out, "{pad}match insn & {shared:#x} {{")?;
         pad.right();
 
         for item in &group.items {
-            writeln!(out, "{pad}{:#x} => {{", item.opcode())?;
+            write!(out, "{pad}{:#x}", item.opcode().bit_and(&shared))?;
+            let exclusive = item.mask().bit_andn(&shared);
+            if exclusive != T::zero() {
+                let exclusive_opcode = item.opcode().bit_and(&exclusive);
+                write!(out, " if insn & {exclusive:#x} == {exclusive_opcode:#x}")?;
+            }
+            writeln!(out, " => {{")?;
             pad.right();
 
             match item {
@@ -605,10 +628,10 @@ where
                     }
                 }
                 Item::Overlap(overlap) => {
-                    self.gen_decode_overlap(out, pad, overlap, group.mask)?;
+                    self.gen_decode_overlap(out, pad, overlap, *item.mask())?;
                 }
                 Item::Group(group) => {
-                    self.gen_decode_group(out, pad, group)?;
+                    self.gen_decode_group(out, pad, group, *item.mask())?;
                 }
             }
 
@@ -625,14 +648,13 @@ where
     }
 
     fn gen_decode<W: Write>(&mut self, out: &mut W, mut pad: Pad) -> io::Result<()> {
-        writeln!(out, "{pad}#[inline(never)]")?;
         write!(out, "{pad}fn decode(&mut self, insn: {}", self.type_name)?;
         for (name, ty) in self.gen.additional_args() {
             write!(out, ", {name}: {ty}")?;
         }
         writeln!(out, ") -> bool {{")?;
         pad.right();
-        self.gen_decode_group(out, pad, &self.tree.root)?;
+        self.gen_decode_group(out, pad, &self.tree.root, T::zero())?;
         writeln!(out)?;
         writeln!(out, "{pad}false")?;
         pad.left();
@@ -647,12 +669,15 @@ where
         pad.right();
         self.gen_extern_func_proto(out, pad)?;
         self.gen_extract_fields(out, pad)?;
-        self.gen_comment(out, pad, "Translations")?;
-        self.gen_trans_proto_group(out, pad, &self.tree.root)?;
-        self.gen_cond_proto(out, pad)?;
-        self.gen_comment(out, pad, "Decode function")?;
-        self.gen_decode(out, pad)?;
-        writeln!(out)?;
+        if !self.tree.root.as_slice().len() != 0 {
+            self.gen_comment(out, pad, "Translations")?;
+            self.gen_trans_proto_group(out, pad, &self.tree.root)?;
+            self.gen_cond_proto(out, pad)?;
+            writeln!(out)?;
+            self.gen_comment(out, pad, "Decode function")?;
+            self.gen_decode(out, pad)?;
+            writeln!(out)?;
+        }
         self.gen_comment(out, pad, "Extern gen trait body")?;
         self.gen.gen_trait_body(out, pad)?;
         pad.left();

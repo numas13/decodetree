@@ -373,19 +373,19 @@ where
 
         assert!(!group.overlap);
 
-        let mut mask = I::zero();
+        let mut mask = I::ones();
         let mut items = vec![];
 
         for i in group.items.iter() {
             let e = match i {
                 E::PatternDef(def) => {
                     let p = self.create_pattern(def, false);
-                    mask = mask.bit_or(&p.mask);
+                    mask = mask.bit_and(&p.mask);
                     Item::Pattern(p)
                 }
                 E::Group(group) => {
                     let g = self.create_overlap_group(group);
-                    mask = mask.bit_or(&g.mask);
+                    mask = mask.bit_and(&g.mask);
                     Item::Overlap(Box::new(g))
                 }
             };
@@ -568,9 +568,7 @@ where
                 self.args.into_values().map(|i| i.into()).collect();
             args.sort_by(|a, b| a.name.cmp(&b.name));
 
-            let mut tree = DecodeTree { fields, args, root };
-            tree.root.optimize(I::zero());
-            Ok(tree)
+            Ok(DecodeTree { fields, args, root })
         } else {
             Err(self.errors)
         }

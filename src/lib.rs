@@ -8,7 +8,7 @@ use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::
 
 use crate::parser::Span;
 
-pub use crate::error::{ErrorPrinter, Errors};
+pub use crate::error::Errors;
 pub use crate::parser::Parser;
 
 #[cfg(feature = "gen")]
@@ -162,12 +162,12 @@ impl<S> FieldDef<S> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ArgDef<S = Str> {
+pub struct SetValueDef<S = Str> {
     name: S,
     ty: Option<S>,
 }
 
-impl<S> ArgDef<S> {
+impl<S> SetValueDef<S> {
     pub fn name(&self) -> &S {
         &self.name
     }
@@ -177,51 +177,62 @@ impl<S> ArgDef<S> {
     }
 }
 
+/// A definition for an argument set.
 #[derive(Clone, Debug)]
-pub struct ArgsDef<S = Str> {
+pub struct SetDef<S = Str> {
     name: S,
     is_extern: bool,
-    items: Vec<ArgDef<S>>,
+    items: Vec<SetValueDef<S>>,
 }
 
-impl<S> ArgsDef<S> {
+impl<S> SetDef<S> {
+    /// Returns the name for this definition.
     pub fn name(&self) -> &S {
         &self.name
     }
 
+    /// Returns `true` if this definition is marked as defined by user.
     pub fn is_extern(&self) -> bool {
         self.is_extern
     }
 
-    pub fn items(&self) -> &[ArgDef<S>] {
+    /// Returns a slice containing all values for this set definition.
+    pub fn values(&self) -> &[SetValueDef<S>] {
         self.items.as_slice()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &ArgDef<S>> {
+    /// Returns an iterator over values for this set definition.
+    pub fn iter(&self) -> impl Iterator<Item = &SetValueDef<S>> {
         self.items.iter()
     }
 }
 
+/// A list of field types.
 #[derive(Clone, Debug)]
 pub enum Field<S = Str> {
+    /// An unnamed field with position and length.
     Field(UnnamedField),
+    /// A refenrence to a field definition.
     FieldRef(Rc<FieldDef<S>>),
 }
 
+/// A list of set value types.
 #[derive(Clone, Debug)]
-pub enum ArgsValueKind<S = Str> {
+pub enum SetValueKind<S = Str> {
+    /// A constant value.
     Const(i64),
+    /// A field value.
     Field(Field<S>),
 }
 
 #[derive(Clone, Debug)]
-pub struct ArgsValue<S = Str> {
+pub struct SetValue<S = Str> {
     name: S,
     ty: Option<S>,
-    kind: Option<ArgsValueKind<S>>,
+    kind: Option<SetValueKind<S>>,
 }
 
-impl<S> ArgsValue<S> {
+impl<S> SetValue<S> {
     pub fn name(&self) -> &S {
         &self.name
     }
@@ -230,18 +241,23 @@ impl<S> ArgsValue<S> {
         self.ty.as_ref()
     }
 
-    pub fn kind(&self) -> &ArgsValueKind<S> {
+    pub fn kind(&self) -> &SetValueKind<S> {
         self.kind.as_ref().expect("handled by parser")
     }
 }
 
+/// A list of value types.
 #[derive(Clone, Debug)]
 pub enum ValueKind<S = Str> {
+    /// A constant value.
     Const(i64),
+    /// A field value.
     Field(Field<S>),
-    Args(Vec<ArgsValue<S>>),
+    /// A set of values.
+    Set(Vec<SetValue<S>>),
 }
 
+/// A value for instruction pattern.
 #[derive(Clone, Debug)]
 pub struct Value<S = Str> {
     name: S,
@@ -249,6 +265,7 @@ pub struct Value<S = Str> {
 }
 
 impl<S> Value<S> {
+    /// Returns the name for this value.
     pub fn name(&self) -> &S {
         &self.name
     }
@@ -267,25 +284,29 @@ impl<S> Value<S> {
         }
     }
 
-    fn new_set(name: S, args: Vec<ArgsValue<S>>) -> Self {
+    fn new_set(name: S, args: Vec<SetValue<S>>) -> Self {
         Self {
             name,
-            kind: ValueKind::Args(args),
+            kind: ValueKind::Set(args),
         }
     }
 
+    /// Returns the corresponding [`ValueKind`] for this value.
     pub fn kind(&self) -> &ValueKind<S> {
         &self.kind
     }
 
+    /// Returns `true` if this value contains [`ValueKind::Set`].
     pub fn is_set(&self) -> bool {
-        matches!(self.kind, ValueKind::Args(..))
+        matches!(self.kind, ValueKind::Set(..))
     }
 
+    /// Returns `true` if this value contains [`ValueKind::Field`].
     pub fn is_field(&self) -> bool {
         matches!(self.kind, ValueKind::Field(..))
     }
 
+    /// Returns `true` if this value contains [`ValueKind::Const`].
     pub fn is_const(&self) -> bool {
         matches!(self.kind, ValueKind::Const(..))
     }
@@ -299,6 +320,7 @@ impl<S> Deref for Value<S> {
     }
 }
 
+/// A condition for an instruction pattern.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cond<S = Str> {
     name: S,
@@ -306,17 +328,21 @@ pub struct Cond<S = Str> {
 }
 
 impl<S> Cond<S> {
+    /// Returns a name of this condition.
     pub fn name(&self) -> &S {
         &self.name
     }
 
+    /// Returns `true` if the condition is inverted.
     pub fn invert(&self) -> bool {
         self.invert
     }
 }
 
+/// An instruction pattern.
 #[derive(Clone, Debug)]
 pub struct Pattern<I = DefaultInsn, S = Str> {
+    #[cfg(feature = "raw")]
     raw: S,
     name: S,
     mask: I,
@@ -327,56 +353,65 @@ pub struct Pattern<I = DefaultInsn, S = Str> {
 }
 
 impl<I, S> Pattern<I, S> {
+    /// Raw pattern string from source code.
+    #[cfg(feature = "raw")]
     pub fn raw(&self) -> &S {
         &self.raw
     }
 
+    /// Pattern name.
     pub fn name(&self) -> &S {
         &self.name
     }
 
+    /// Mask for instruction to match with `opcode`.
     pub fn mask(&self) -> &I {
         &self.mask
     }
 
+    /// Opcode to match with masked instruction.
     pub fn opcode(&self) -> &I {
         &self.opcode
     }
 
+    /// Pattern size in bits.
     #[allow(clippy::len_without_is_empty)]
     pub fn size(&self) -> u32 {
         self.size
     }
 
-    pub fn args(&self) -> &[Value<S>] {
+    /// Returns a slice containing all values for this pattern.
+    pub fn values(&self) -> &[Value<S>] {
         self.args.as_slice()
     }
 
+    /// Check if this pattern has any conditions.
     pub fn has_conditions(&self) -> bool {
         !self.conditions().is_empty()
     }
 
+    /// Returns a slice containing all conditions for this pattern.
     pub fn conditions(&self) -> &[Cond<S>] {
         self.cond.as_slice()
     }
 }
 
 impl<'a, I> Pattern<I, Span<'a>> {
-    fn args_push(&mut self, value: Value<Span<'a>>) {
-        fn convert(kind: ValueKind<Span>) -> ArgsValueKind<Span> {
+    fn push_args(&mut self, value: Value<Span<'a>>) {
+        fn convert(kind: ValueKind<Span>) -> SetValueKind<Span> {
             match kind {
-                ValueKind::Const(value) => ArgsValueKind::Const(value),
-                ValueKind::Field(field) => ArgsValueKind::Field(field),
-                ValueKind::Args(..) => panic!("nested args set"),
+                ValueKind::Const(value) => SetValueKind::Const(value),
+                ValueKind::Field(field) => SetValueKind::Field(field),
+                ValueKind::Set(..) => panic!("nested args set"),
             }
         }
 
         match &value.kind {
-            ValueKind::Args(..) => self.args.push(value),
+            ValueKind::Set(..) => self.args.push(value),
             ValueKind::Field(..) | ValueKind::Const(..) => {
                 // fill empty slot
                 for arg in self.args.iter_mut().rev() {
-                    if let ValueKind::Args(args) = &mut arg.kind {
+                    if let ValueKind::Set(args) = &mut arg.kind {
                         if let Some(item) = args.iter_mut().find(|i| {
                             i.kind.is_none() && i.name.fragment() == value.name.fragment()
                         }) {
@@ -388,7 +423,7 @@ impl<'a, I> Pattern<I, Span<'a>> {
 
                 // override slot in last set
                 for arg in self.args.iter_mut().rev() {
-                    if let ValueKind::Args(args) = &mut arg.kind {
+                    if let ValueKind::Set(args) = &mut arg.kind {
                         if let Some(item) = args
                             .iter_mut()
                             .find(|i| i.name.fragment() == value.name.fragment())
@@ -416,7 +451,7 @@ impl<I, S> Pattern<I, S>
 where
     S: Clone + Eq,
 {
-    fn cond_push(&mut self, cond: Cond<S>) {
+    fn push_condition(&mut self, cond: Cond<S>) {
         if let Some(prev) = self.cond.iter_mut().find(|i| i.name == cond.name) {
             prev.invert = cond.invert;
         } else {
@@ -425,9 +460,12 @@ where
     }
 }
 
+/// A child item for a overlap group.
 #[derive(Clone, Debug)]
 pub enum OverlapItem<I = DefaultInsn, S = Str> {
+    /// An instruction pattern.
     Pattern(Pattern<I, S>),
+    /// A non-overlap group.
     Group(Box<Group<I, S>>),
 }
 
@@ -440,6 +478,7 @@ impl<I, S> OverlapItem<I, S> {
     }
 }
 
+/// A group for overlapping patterns.
 #[derive(Clone, Debug, Default)]
 pub struct Overlap<I = DefaultInsn, S = Str> {
     mask: I,
@@ -448,20 +487,22 @@ pub struct Overlap<I = DefaultInsn, S = Str> {
 }
 
 impl<I, S> Overlap<I, S> {
-    /// Shared mask for all child items.
+    /// Mask for instruction to match with `opcode`.
     pub fn mask(&self) -> &I {
         &self.mask
     }
 
-    /// Shared opcode for all child items.
+    /// Opcode to match with masked instruction.
     pub fn opcode(&self) -> &I {
         &self.opcode
     }
 
+    /// Returns a slice containing all childs of the overlap group.
     pub fn as_slice(&self) -> &[OverlapItem<I, S>] {
         self.items.as_slice()
     }
 
+    /// Returns an iterator over this overlap group.
     pub fn iter(&self) -> impl Iterator<Item = &OverlapItem<I, S>> {
         self.items.iter()
     }
@@ -487,27 +528,33 @@ impl<I: Insn, S> Overlap<I, S> {
     }
 }
 
+/// A child item for a non-overlap group.
 #[derive(Clone, Debug)]
 pub enum Item<I, S = Str> {
+    /// An instruction pattern.
     Pattern(Pattern<I, S>),
+    /// An overlap group.
     Overlap(Box<Overlap<I, S>>),
+    /// A non-overlap group.
     Group(Box<Group<I, S>>),
 }
 
 impl<I, S> Item<I, S> {
-    pub fn opcode(&self) -> &I {
-        match self {
-            Self::Pattern(i) => &i.opcode,
-            Self::Overlap(i) => &i.opcode,
-            Self::Group(i) => &i.opcode,
-        }
-    }
-
+    /// Mask for instruction to match with `opcode`.
     pub fn mask(&self) -> &I {
         match self {
             Self::Pattern(i) => &i.mask,
             Self::Overlap(i) => &i.mask,
             Self::Group(i) => &i.mask,
+        }
+    }
+
+    /// Opcode to match with masked instruction.
+    pub fn opcode(&self) -> &I {
+        match self {
+            Self::Pattern(i) => &i.opcode,
+            Self::Overlap(i) => &i.opcode,
+            Self::Group(i) => &i.opcode,
         }
     }
 
@@ -520,7 +567,7 @@ impl<I, S> Item<I, S> {
     }
 }
 
-/// Container for non-overlap patterns or groups.
+/// A group for non-overlapping patterns.
 #[derive(Clone, Debug, Default)]
 pub struct Group<I = DefaultInsn, S = Str> {
     mask: I,
@@ -544,7 +591,7 @@ impl<I, S> Group<I, S> {
         self.items.as_slice()
     }
 
-    /// Returns an iterator over the group.
+    /// Returns an iterator over this non-overlap group.
     pub fn iter(&self) -> impl Iterator<Item = &Item<I, S>> {
         self.items.iter()
     }
@@ -605,28 +652,116 @@ impl<I: Insn, S> Group<I, S> {
     }
 }
 
-/// Container for fields, args and patterns.
+/// Container for field definitions, set definitions and patterns.
 #[derive(Clone, Debug, Default)]
 pub struct DecodeTree<I = DefaultInsn, S = Str> {
-    /// Fields definitions.
+    /// Field definitions.
     pub fields: Vec<Rc<FieldDef<S>>>,
-    /// Argument Sets definitions.
-    pub args: Vec<ArgsDef<S>>,
-    /// Root for all patterns.
+    /// Set definitions.
+    pub args: Vec<SetDef<S>>,
+    /// The root non-overlap group for this decodetree.
     pub root: Group<I, S>,
 }
 
 impl<I: Insn, S> DecodeTree<I, S> {
-    /// Optimize tree.
+    /// Optimize this tree.
+    ///
+    /// Common parts of patterns will be found and placed into separate non-overlap groups.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// a       .... .... .... ..00
+    ///
+    /// b_a     .... .... ..00 ..01
+    /// b_b     .... .... ..01 ..01
+    /// b_c     .... .... ..10 ..01
+    ///
+    /// b_d_a   0... .... ..11 ..01
+    /// b_d_b   1... .... ..11 ..01
+    ///
+    /// c       .... .... .... ..10
+    /// d       .... .... .... ..11
+    /// ```
+    ///
+    /// Without optimization:
+    ///
+    /// ```text
+    /// [ # 0000:0003
+    ///   0000:0003:16 a
+    ///   0001:0033:16 b_a
+    ///   0011:0033:16 b_b
+    ///   0021:0033:16 b_c
+    ///   0031:8033:16 b_d_a
+    ///   8031:8033:16 b_d_b
+    ///   0002:0003:16 c
+    ///   0003:0003:16 d
+    /// ]
+    /// ```
+    ///
+    /// With optimization:
+    ///
+    /// ```text
+    /// [ # 0000:0003
+    ///   0000:0003:16 a
+    ///   [ # 0001:0003
+    ///     0001:0033:16 b_a
+    ///     0011:0033:16 b_b
+    ///     0021:0033:16 b_c
+    ///     [ # 0031:0033
+    ///       0031:8033:16 b_d_a
+    ///       8031:8033:16 b_d_b
+    ///     ]
+    ///   ]
+    ///   0002:0003:16 c
+    ///   0003:0003:16 d
+    /// ]
+    /// ```
     pub fn optimize(&mut self) {
         self.root.optimize();
     }
 }
 
-/// Build decodetree from a string.
-pub fn from_str<I>(src: &str) -> Result<DecodeTree<I, Str>, Errors>
+/// Parse a decodetree from a string.
+///
+/// Use [`Parser::new`] to override default parameters.
+///
+/// # Examples
+///
+/// ```rust
+/// # use decodetree::{Item, ValueKind};
+/// let src = r#"
+///     ## Fields:
+///     %rd     4:4
+///     %rs     8:4
+///     ## Argument sets:
+///     &r      rd rs
+///     ## Formats:
+///     @r      .... .... .... .... &r %rd %rs
+///     ## Patterns:
+///     add     0000 .... .... 0000 @r
+///     sub     1000 .... .... 0000 @r
+/// "#;
+///
+/// let tree = decodetree::from_str::<u16, &str>(&src).unwrap();
+///
+/// for (i, item) in tree.root.iter().enumerate() {
+///     let Item::Pattern(p) = item else { panic!() };
+///     assert_eq!(p.name(), &["add", "sub"][i]);
+///
+///     let args = p.values();
+///     assert!(args[0].is_set());
+///     assert_eq!(args[0].name(), &"r");
+///
+///     let ValueKind::Set(set) = args[0].kind() else { panic!() };
+///     assert_eq!(set[0].name(), &"rd");
+///     assert_eq!(set[1].name(), &"rs");
+/// }
+/// ```
+pub fn from_str<'src, I, S>(src: &'src str) -> Result<DecodeTree<I, S>, Errors>
 where
     I: Insn,
+    S: Ord + From<&'src str>,
 {
-    Parser::<I, Str>::new(src).parse()
+    Parser::<I, S>::new(src).parse()
 }

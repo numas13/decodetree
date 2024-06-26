@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::{
-    ArgsValue, ArgsValueKind, DecodeTree, Field, FieldDef, FieldItem, Group, Insn, Item, Overlap,
-    OverlapItem, Pattern, Str, ValueKind,
+    DecodeTree, Field, FieldDef, FieldItem, Group, Insn, Item, Overlap, OverlapItem, Pattern,
+    SetValue, SetValueKind, Str, ValueKind,
 };
 
 /// Helper to align generated code.
@@ -239,7 +239,7 @@ where
             let name = value.name();
             write!(out, ", {name}: ")?;
             match value.kind() {
-                ValueKind::Args(..) => write!(out, "args_{name}")?,
+                ValueKind::Set(..) => write!(out, "args_{name}")?,
                 ValueKind::Const(..) => write!(out, "i64")?,
                 _ => write!(out, "isize")?,
             }
@@ -486,15 +486,15 @@ where
         out: &mut W,
         pad: Pad,
         name: &str,
-        items: &[ArgsValue<S>],
+        items: &[SetValue<S>],
     ) -> io::Result<()> {
         writeln!(out, "{pad}let {name} = args_{name} {{")?;
         let p = pad.shift();
         for arg in items {
             write!(out, "{p}{}: ", arg.name)?;
             match arg.kind() {
-                ArgsValueKind::Field(f) => self.gen_extract_field(out, f)?,
-                ArgsValueKind::Const(v) => write!(out, "{v}")?,
+                SetValueKind::Field(f) => self.gen_extract_field(out, f)?,
+                SetValueKind::Const(v) => write!(out, "{v}")?,
             }
             if let Some(ref ty) = arg.ty {
                 write!(out, " as {ty}")?;
@@ -514,7 +514,7 @@ where
         for arg in i.args.iter().filter(|i| self.gen.trans_check_arg(i.name())) {
             let name = arg.name();
             match arg.kind() {
-                ValueKind::Args(set) => {
+                ValueKind::Set(set) => {
                     self.gen_extract_set(out, pad, name, set.as_slice())?;
                 }
                 ValueKind::Field(f) => {

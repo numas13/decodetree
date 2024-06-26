@@ -13,12 +13,12 @@ use decodetree::{
 #[derive(Default)]
 struct Helper {}
 
-impl<T> Gen<T> for Helper {
+impl<T> Gen<T, &'_ str> for Helper {
     fn trans_body<W: Write>(
         &mut self,
         out: &mut W,
         mut pad: Pad,
-        pattern: &Pattern<T>,
+        pattern: &Pattern<T, &str>,
     ) -> io::Result<bool> {
         let opcode = pattern.name().to_uppercase();
         writeln!(out, "{{")?;
@@ -67,7 +67,7 @@ where
 {
     println!("cargo:rerun-if-changed={path}");
     let src = fs::read_to_string(path).unwrap();
-    let tree = match decodetree::from_str::<T>(&src) {
+    let tree = match decodetree::from_str::<T, &str>(&src) {
         Ok(tree) => tree,
         Err(errors) => {
             for err in errors.iter(path) {

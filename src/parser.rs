@@ -18,8 +18,8 @@ type FieldItem<'a, S = Span<'a>> = super::FieldItem<S>;
 type FieldDef<'a, S = Span<'a>> = super::FieldDef<S>;
 type FieldRef<'a, S = Span<'a>> = super::FieldRef<S>;
 type Field<'a, S = Span<'a>> = super::Field<S>;
-type ArgsValueKind<'a, S = Span<'a>> = super::ArgsValueKind<S>;
-type ArgsValue<'a, S = Span<'a>> = super::ArgsValue<S>;
+type ArgsValueKind<'a, S = Span<'a>> = super::SetValueKind<S>;
+type ArgsValue<'a, S = Span<'a>> = super::SetValue<S>;
 type ValueKind<'a, S = Span<'a>> = super::ValueKind<S>;
 type Value<'a, S = Span<'a>> = super::Value<S>;
 type Cond<'a, S = Span<'a>> = super::Cond<S>;
@@ -36,18 +36,18 @@ struct ArgsDef<'src> {
     items: Vec<ArgsValue<'src>>,
 }
 
-impl<'src, S> From<ArgsDef<'src>> for super::ArgsDef<S>
+impl<'src, S> From<ArgsDef<'src>> for super::SetDef<S>
 where
     S: From<&'src str>,
 {
-    fn from(other: ArgsDef<'src>) -> super::ArgsDef<S> {
+    fn from(other: ArgsDef<'src>) -> super::SetDef<S> {
         Self {
             name: S::from(&other.name),
             is_extern: other.is_extern,
             items: other
                 .items
                 .iter()
-                .map(|i| super::ArgDef {
+                .map(|i| super::SetValueDef {
                     name: S::from(&i.name),
                     ty: i.ty.map(|s| S::from(&s)),
                 })
@@ -182,6 +182,7 @@ where
         use parse::PatternItem as E;
 
         let mut pat = Pattern {
+            #[cfg(feature = "raw")]
             raw: def.raw,
             name: def.name,
             mask: I::zero(),
@@ -196,7 +197,7 @@ where
                 E::FixedBits(..) | E::FixedField(..) => {}
                 E::ArgsRef(i) => {
                     if let Some(r) = self.args.get(i.fragment()) {
-                        pat.args_push(Value::new_set(*i, r.items.clone()));
+                        pat.push_args(Value::new_set(*i, r.items.clone()));
                     } else {
                         self.errors.undefined(*i, Token::Args);
                     }
@@ -204,23 +205,23 @@ where
                 E::FieldRef(i) => {
                     if let Some(field) = self.fields.get(i.field.fragment()) {
                         let field = Field::FieldRef(field.clone());
-                        pat.args_push(Value::new_field(i.name, field));
+                        pat.push_args(Value::new_field(i.name, field));
                     } else {
                         self.errors.undefined(i.field, Token::Field);
                     }
                 }
                 E::Const(i) => {
-                    pat.args_push(Value::new_const(i.name, i.value()));
+                    pat.push_args(Value::new_const(i.name, i.value()));
                 }
                 E::FormatRef(r) => {
                     if let Some(format) = self.formats.get(r.fragment()) {
                         pat.mask = pat.mask.bit_or(&format.mask);
                         pat.opcode = pat.opcode.bit_or(&format.opcode);
                         for i in &format.args {
-                            pat.args_push(i.clone());
+                            pat.push_args(i.clone());
                         }
                         for i in &format.cond {
-                            pat.cond_push(i.clone());
+                            pat.push_condition(i.clone());
                         }
                     } else {
                         self.errors.undefined(*r, Token::Format);
@@ -244,7 +245,7 @@ where
                         len: i.len(),
                         sxt: i.sign_extend(),
                     };
-                    pat.args_push(Value::new_field(i.name, Field::Field(field)));
+                    pat.push_args(Value::new_field(i.name, Field::Field(field)));
                     pat.size += i.len();
                 }
                 _ => {}
@@ -259,7 +260,7 @@ where
 
         if !is_format {
             for arg in &pat.args {
-                if let ValueKind::Args(args) = &arg.kind {
+                if let ValueKind::Set(args) = &arg.kind {
                     for i in args.iter().filter(|i| i.kind.is_none()) {
                         self.errors
                             .push(arg.name, ErrorKind::UndefinedMember(def.name, i.name));
@@ -269,7 +270,7 @@ where
         }
 
         for i in &def.cond {
-            pat.cond_push(i.clone());
+            pat.push_condition(i.clone());
         }
 
         pat
@@ -462,8 +463,8 @@ where
 
     fn convert_value_kind(&self, kind: &ValueKind<'src>) -> ValueKind<S> {
         match kind {
-            ValueKind::Args(args) => {
-                ValueKind::Args(args.iter().map(|i| self.convert_arg(i)).collect())
+            ValueKind::Set(args) => {
+                ValueKind::Set(args.iter().map(|i| self.convert_arg(i)).collect())
             }
             ValueKind::Field(field) => ValueKind::Field(self.convert_field(field)),
             ValueKind::Const(value) => ValueKind::Const(*value),
@@ -479,6 +480,7 @@ where
 
     fn convert_pattern(&self, pat: &Pattern<'src, I>) -> Pattern<I, S> {
         Pattern {
+            #[cfg(feature = "raw")]
             raw: S::from(&pat.raw),
             name: S::from(&pat.name),
             mask: pat.mask,
@@ -566,7 +568,7 @@ where
             let mut fields: Vec<_> = self.fields_tree.into_values().collect();
             fields.sort_by(|a, b| a.name.cmp(&b.name));
 
-            let mut args: Vec<super::ArgsDef<S>> =
+            let mut args: Vec<super::SetDef<S>> =
                 self.args.into_values().map(|i| i.into()).collect();
             args.sort_by(|a, b| a.name.cmp(&b.name));
 

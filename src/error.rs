@@ -125,7 +125,7 @@ impl<'a> Error<'a> {
         }
     }
 
-    pub fn printer<'b: 'a>(&'b self, file: &'a str, src: &'a str) -> ErrorPrinter<'b> {
+    pub fn printer<'b: 'a>(&'b self, file: &'a str, src: &'a str) -> impl 'b + fmt::Display {
         ErrorPrinter {
             err: self,
             file,
@@ -339,6 +339,29 @@ impl fmt::Display for ErrorPrinter<'_> {
     }
 }
 
+/// Parser errors.
+///
+/// # Examples
+///
+/// ```rust
+/// let src = "inc .... 0000 %reg";
+/// if let Err(errors) = decodetree::from_str::<u8, &str>(src) {
+///     for err in errors.iter("input") {
+///         eprintln!("{err}");
+///     }
+/// }
+/// ```
+///
+/// Will print something like this:
+///
+/// ```text
+/// error: cannot find field `reg`
+///  --> input:1:16
+///   |
+/// 1 | inc .... 0000 %reg
+///   |                ^^^ not found
+///
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct Errors<'a> {
     src: &'a str,
@@ -389,11 +412,12 @@ impl<'a> Errors<'a> {
         self.push(cur, ErrorKind::InvalidOpcode);
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.list.is_empty()
     }
 
-    pub fn iter<'b: 'a>(&'b self, file: &'b str) -> impl Iterator<Item = ErrorPrinter<'a>> {
+    /// Returns an iterator over parser errors.
+    pub fn iter<'b: 'a>(&'b self, file: &'b str) -> impl Iterator<Item = impl 'a + fmt::Display> {
         self.list.iter().map(move |i| i.printer(file, self.src))
     }
 }

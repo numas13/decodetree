@@ -11,7 +11,9 @@ use decodetree::{
 };
 
 #[derive(Default)]
-struct Helper {}
+struct Helper {
+    opcodes: bool,
+}
 
 impl<T> Gen<T, &'_ str> for Helper {
     fn trans_body<W: Write>(
@@ -42,32 +44,34 @@ impl<T> Gen<T, &'_ str> for Helper {
         mut pad: Pad,
         opcodes: &HashSet<&str>,
     ) -> io::Result<()> {
-        let opcodes = {
-            let mut vec: Vec<_> = opcodes.iter().collect();
-            vec.sort();
-            vec
-        };
+        if self.opcodes {
+            let opcodes = {
+                let mut vec: Vec<_> = opcodes.iter().collect();
+                vec.sort();
+                vec
+            };
 
-        writeln!(out)?;
-        writeln!(out, "{pad}#[derive(Copy, Clone, Debug, PartialEq, Eq)]")?;
-        writeln!(out, "{pad}pub enum Opcode {{")?;
-        pad.right();
-        for i in opcodes {
-            writeln!(out, "{pad}{},", i.to_uppercase())?;
+            writeln!(out)?;
+            writeln!(out, "{pad}#[derive(Copy, Clone, Debug, PartialEq, Eq)]")?;
+            writeln!(out, "{pad}pub enum Opcode {{")?;
+            pad.right();
+            for i in opcodes {
+                writeln!(out, "{pad}{},", i.to_uppercase())?;
+            }
+            pad.left();
+            writeln!(out, "{pad}}}")?;
         }
-        pad.left();
-        writeln!(out, "{pad}}}")?;
         Ok(())
     }
 }
 
-fn gen<T>(trait_name: &str, path: &str, out: &str)
+fn gen<T>(trait_name: &str, path: &str, out: &str, opt: bool)
 where
     T: Default + std::hash::Hash + std::fmt::LowerHex + Ord + decodetree::Insn,
 {
     println!("cargo:rerun-if-changed={path}");
     let src = fs::read_to_string(path).unwrap();
-    let tree = match decodetree::from_str::<T, &str>(&src) {
+    let mut tree = match decodetree::from_str::<T, &str>(&src) {
         Ok(tree) => tree,
         Err(errors) => {
             for err in errors.iter(path) {
@@ -81,10 +85,14 @@ where
     }
     let mut out = BufWriter::new(File::create(out).unwrap());
 
+    if opt {
+        tree.optimize();
+    }
+
     Generator::builder()
         .trait_name(trait_name)
         .stubs(true)
-        .build(&tree, Helper::default())
+        .build(&tree, Helper { opcodes: !opt })
         .generate(&mut out)
         .unwrap();
 }
@@ -96,5 +104,13 @@ fn main() {
         "Decode",
         "src/insn32.decode",
         &format!("{out_dir}/generated.rs"),
+        false,
+    );
+
+    gen::<u32>(
+        "Decode",
+        "src/insn32.decode",
+        &format!("{out_dir}/generated_opt.rs"),
+        true,
     );
 }

@@ -56,6 +56,7 @@ where
     }
 }
 
+/// Decodetree parser.
 pub struct Parser<'src, I = super::DefaultInsn, S = Str> {
     src: &'src str,
     insn_size: u32,
@@ -73,6 +74,7 @@ where
     I: Insn,
     S: Ord + From<&'src str>,
 {
+    /// Creates a new parser for decodetree input in `src`.
     pub fn new(src: &'src str) -> Self {
         Self {
             src,
@@ -87,11 +89,16 @@ where
         }
     }
 
+    /// Override the maximum instruction size in bits.
     pub fn set_insn_size(mut self, size: u32) -> Self {
         self.insn_size = size;
         self
     }
 
+    /// Set to `true` if the instruction size is fixed.
+    ///
+    /// If `true` the parser will generate errors for instruction patterns with size not equal
+    /// to `insn_size`.
     pub fn set_insn_fixed_size(mut self, is_fixed_insn: bool) -> Self {
         self.is_fixed_insn = is_fixed_insn;
         self
@@ -535,6 +542,21 @@ where
         }
     }
 
+    /// Parse `src`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use decodetree::{Parser, Item};
+    /// let src = "lui .................... ..... 0110111";
+    /// let tree = Parser::<u32, &str>::new(src)
+    ///     .set_insn_fixed_size(true)
+    ///     .parse()
+    ///     .unwrap();
+    /// let patterns = tree.root.as_slice();
+    /// let Item::Pattern(p) = &patterns[0] else { panic!() };
+    /// assert_eq!(p.name(), &"lui");
+    /// ```
     pub fn parse(mut self) -> Result<DecodeTree<I, S>, Errors<'src>> {
         use parse::Stmt;
 

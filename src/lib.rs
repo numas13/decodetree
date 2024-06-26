@@ -1,3 +1,12 @@
+//! # Decodetree parser and generator.
+//!
+//! This crate provides utilities to generate decoding tries.
+//!
+//! To be able to decode instructions you need their descriptions writteng in special format.
+//! The syntax can be found in [specification][1].
+//!
+//! [1]: https://www.qemu.org/docs/master/devel/decodetree.html
+
 mod error;
 mod parser;
 
@@ -19,14 +28,30 @@ type DefaultInsn = u32;
 /// Default type for storing strings.
 pub type Str = Box<str>;
 
+/// Helper trait to work with instruction bits.
 pub trait Insn: Sized + Copy + Clone + Eq + Ord + Hash + LowerHex + Default {
+    /// Returns the size in bits of the instruction word.
     fn width() -> u32;
+
+    /// Returns value with all bits set to `0`.
     fn zero() -> Self;
+
+    /// Returns value with all bits set to `1`.
     fn ones() -> Self;
+
+    /// Set bit at `offset` to `bit`.
     fn set_bit(&mut self, offset: u32, bit: bool);
+
+    /// The bitwise NOT operation.
     fn bit_not(&self) -> Self;
+
+    /// The bitwise AND operation.
     fn bit_and(&self, other: &Self) -> Self;
+
+    /// The bitwise AND operation with inversed `other`.
     fn bit_andn(&self, other: &Self) -> Self;
+
+    /// The bitwise OR operation.
     fn bit_or(&self, other: &Self) -> Self;
 }
 
@@ -72,6 +97,7 @@ macro_rules! impl_insn {
 
 impl_insn!(u8, u16, u32, u64, u128);
 
+/// An unnamed field with position and length.
 #[derive(Copy, Clone, Debug)]
 pub struct UnnamedField {
     pos: u32,
@@ -80,20 +106,24 @@ pub struct UnnamedField {
 }
 
 impl UnnamedField {
+    /// Returns the bit position of this field.
     pub fn pos(&self) -> u32 {
         self.pos
     }
 
+    /// Returns the length of this field.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u32 {
         self.len
     }
 
+    /// Returns `true` if this field must be extended with sign.
     pub fn sxt(&self) -> bool {
         self.sxt
     }
 }
 
+/// A reference to a field definition.
 #[derive(Clone, Debug)]
 pub struct FieldRef<S = Str> {
     field: Rc<FieldDef<S>>,
@@ -106,23 +136,29 @@ impl<S> FieldRef<S> {
         Self { field, len, sxt }
     }
 
+    /// Returns the field definition for this reference.
     pub fn field(&self) -> &FieldDef<S> {
         &self.field
     }
 
+    /// Returns the length of this field reference.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u32 {
         self.len
     }
 
+    /// Returns `true` if this field must be extended with sign.
     pub fn sxt(&self) -> bool {
         self.sxt
     }
 }
 
+/// A list of subfield types for field definition.
 #[derive(Clone, Debug)]
 pub enum FieldItem<S = Str> {
+    /// Unnamed subfield with position and length.
     Field(UnnamedField),
+    /// Reference to another field definition.
     FieldRef(FieldRef<S>),
 }
 
@@ -136,6 +172,7 @@ impl<S> FieldItem<S> {
     }
 }
 
+/// A field definition.
 #[derive(Clone, Debug)]
 pub struct FieldDef<S = Str> {
     name: S,
@@ -144,23 +181,28 @@ pub struct FieldDef<S = Str> {
 }
 
 impl<S> FieldDef<S> {
+    /// Returns the name for this field.
     pub fn name(&self) -> &S {
         &self.name
     }
 
+    /// Returns an optional user defined function for this field.
     pub fn func(&self) -> Option<&S> {
         self.func.as_ref()
     }
 
+    /// Returns a slice containing all subfields for this field.
     pub fn items(&self) -> &[FieldItem<S>] {
         &self.items
     }
 
+    /// Returns an iterator over all subfields for this field.
     pub fn iter(&self) -> impl Iterator<Item = &FieldItem<S>> {
         self.items.iter()
     }
 }
 
+/// A value definition for a set.
 #[derive(Clone, Debug)]
 pub struct SetValueDef<S = Str> {
     name: S,
@@ -168,10 +210,12 @@ pub struct SetValueDef<S = Str> {
 }
 
 impl<S> SetValueDef<S> {
+    /// Returns the name for this value.
     pub fn name(&self) -> &S {
         &self.name
     }
 
+    /// Returns the type for this value if specified.
     pub fn ty(&self) -> Option<&S> {
         self.ty.as_ref()
     }
@@ -225,6 +269,7 @@ pub enum SetValueKind<S = Str> {
     Field(Field<S>),
 }
 
+/// A value for a set.
 #[derive(Clone, Debug)]
 pub struct SetValue<S = Str> {
     name: S,
@@ -233,14 +278,17 @@ pub struct SetValue<S = Str> {
 }
 
 impl<S> SetValue<S> {
+    /// Returns the name for this value.
     pub fn name(&self) -> &S {
         &self.name
     }
 
+    /// Returns the type for this value if specified.
     pub fn ty(&self) -> Option<&S> {
         self.ty.as_ref()
     }
 
+    /// Returns the corresponding [`SetValueKind`] for this set value.
     pub fn kind(&self) -> &SetValueKind<S> {
         self.kind.as_ref().expect("handled by parser")
     }

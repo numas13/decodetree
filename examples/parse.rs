@@ -233,7 +233,15 @@ fn parse_cli() -> Cli {
             "-r" => cli.raw = true,
             "-v" => cli.variable_size = true,
             "-h" => {
-                println!("parse -d -D -O -g path");
+                println!("parse [OPTIONS] path");
+                println!();
+                println!("OPTIONS:");
+                println!("  -d  dump tree");
+                println!("  -D  dump tree (debug)");
+                println!("  -r  print raw patterns for patterns");
+                println!("  -O  optimize tree");
+                println!("  -g  generate Rust code");
+                println!("  -v  generate for variable sized instructions");
                 process::exit(0);
             }
             _ => {

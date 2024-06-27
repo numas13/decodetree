@@ -114,7 +114,8 @@ impl<T> Gen<T> for () {}
 /// Generator builder.
 pub struct GeneratorBuilder {
     trait_name: Str,
-    type_name: Option<Str>,
+    insn_type: Option<Str>,
+    value_type: Option<Str>,
     zextract: Str,
     sextract: Str,
     stubs: bool,
@@ -125,7 +126,8 @@ impl Default for GeneratorBuilder {
     fn default() -> Self {
         Self {
             trait_name: Str::from("Decode"),
-            type_name: None,
+            insn_type: None,
+            value_type: None,
             zextract: Str::from("zextract"),
             sextract: Str::from("sextract"),
             stubs: false,
@@ -136,14 +138,20 @@ impl Default for GeneratorBuilder {
 
 impl GeneratorBuilder {
     /// Override Decode trait name.
-    pub fn trait_name(mut self, s: &str) -> Self {
-        self.trait_name = s.into();
+    pub fn trait_name(mut self, name: &str) -> Self {
+        self.trait_name = name.into();
         self
     }
 
     /// Override instruction type.
-    pub fn insn_type(mut self, s: &str) -> Self {
-        self.type_name = Some(s.into());
+    pub fn insn_type(mut self, ty: &str) -> Self {
+        self.insn_type = Some(ty.into());
+        self
+    }
+
+    /// Override type for pattern values.
+    pub fn value_type(mut self, ty: &str) -> Self {
+        self.value_type = Some(ty.into());
         self
     }
 
@@ -177,11 +185,17 @@ impl GeneratorBuilder {
         T: Insn,
         G: Gen<T, S>,
     {
+        let insn_type = self
+            .insn_type
+            .unwrap_or_else(|| format!("u{}", T::width()).into());
+        let value_type = self
+            .value_type
+            .unwrap_or_else(|| format!("i{}", T::width()).into());
+
         Generator {
             trait_name: self.trait_name,
-            type_name: self
-                .type_name
-                .unwrap_or_else(|| format!("u{}", T::width()).into()),
+            insn_type,
+            value_type,
             zextract: self.zextract,
             sextract: self.sextract,
             stubs: self.stubs,
@@ -197,7 +211,8 @@ impl GeneratorBuilder {
 /// Decodetree generator.
 pub struct Generator<'a, T = super::DefaultInsn, S = Str, G = ()> {
     trait_name: Str,
-    type_name: Str,
+    insn_type: Str,
+    value_type: Str,
     zextract: Str,
     sextract: Str,
     stubs: bool,
@@ -258,8 +273,7 @@ where
             write!(out, ", {name}: ")?;
             match value.kind() {
                 ValueKind::Set(..) => write!(out, "args_{name}")?,
-                ValueKind::Const(..) => write!(out, "i64")?,
-                _ => write!(out, "isize")?,
+                _ => write!(out, "{}", self.value_type)?,
             }
         }
         write!(out, ") -> bool")?;
@@ -355,7 +369,7 @@ where
             } else {
                 writeln!(out, "{pad}pub struct args_{} {{", args.name)?;
                 for i in &args.items {
-                    let ty = i.ty.as_deref().unwrap_or("isize");
+                    let ty = i.ty.as_deref().unwrap_or(&self.value_type);
                     writeln!(out, "{}pub {}: {ty},", pad.shift(), i.name)?;
                 }
                 writeln!(out, "{pad}}}")?;
@@ -376,7 +390,8 @@ where
                 }
 
                 set.insert(i);
-                write!(out, "{pad}fn {i}(&mut self, value: isize) -> isize")?;
+                let ty = &self.value_type;
+                write!(out, "{pad}fn {i}(&mut self, value: {ty}) -> {ty}")?;
                 if self.stubs {
                     writeln!(out, " {{ todo!(\"{i}\") }}")?;
                 } else {
@@ -396,6 +411,7 @@ where
         field: &FieldDef<S>,
         pad: Pad,
     ) -> io::Result<()> {
+        let ty = &self.value_type;
         if field.items.len() == 1 {
             let f = &field.items[0];
             write!(out, "{pad}")?;
@@ -410,7 +426,7 @@ where
                     } else {
                         &self.zextract
                     };
-                    write!(out, "{func}(insn, {pos}, {len}) as isize")?;
+                    write!(out, "{func}(insn, {pos}, {len}) as {ty}")?;
                 }
                 FieldItem::FieldRef(f) => {
                     let (field, len) = (f.field(), f.len());
@@ -420,7 +436,7 @@ where
                         &self.zextract
                     };
                     let name = field.name();
-                    write!(out, "{func}(Self::extract_{name}(insn), 0, {len}) as isize")?;
+                    write!(out, "{func}(Self::extract_{name}(insn), 0, {len}) as {ty}")?;
                 }
             }
             if field.func.is_some() {
@@ -439,7 +455,7 @@ where
                         } else {
                             &self.zextract
                         };
-                        writeln!(out, "{pad}out |= {func}(insn, {pos}, {len}) as isize;")?;
+                        writeln!(out, "{pad}out |= {func}(insn, {pos}, {len}) as {ty};")?;
                     }
                     FieldItem::FieldRef(f) => {
                         let (field, len) = (f.field(), f.len());
@@ -447,7 +463,7 @@ where
                         let s = ["", "s"][f.sxt() as usize];
                         let name = field.name();
                         writeln!(out, "{pad}let tmp0 = Self::extract_{name}(insn);")?;
-                        writeln!(out, "{pad}out |= {s}extract(tmp0, 0, {len}) as isize;")?;
+                        writeln!(out, "{pad}out |= {s}extract(tmp0, 0, {len}) as {ty};")?;
                     }
                 }
             }
@@ -465,12 +481,13 @@ where
             return Ok(());
         }
         self.gen_comment(out, pad, "Extract functions")?;
+        let insn_ty = &self.insn_type;
+        let val_ty = &self.value_type;
         for field in &self.tree.fields {
             let name = field.name();
-            let ty = &self.type_name;
             writeln!(
                 out,
-                "{pad}fn extract_{name}(&mut self, insn: {ty}) -> isize {{",
+                "{pad}fn extract_{name}(&mut self, insn: {insn_ty}) -> {val_ty} {{",
             )?;
             self.gen_extract_field_body(out, field, pad.shift())?;
             writeln!(out, "{pad}}}",)?;
@@ -493,7 +510,7 @@ where
                 } else {
                     &self.zextract
                 };
-                write!(out, "{func}(insn, {pos}, {len}) as isize")?;
+                write!(out, "{func}(insn, {pos}, {len}) as {}", self.value_type)?;
             }
         }
         Ok(())
@@ -767,7 +784,7 @@ where
 
     fn gen_decode<W: Write>(&mut self, out: &mut W, mut pad: Pad) -> io::Result<()> {
         self.gen_comment(out, pad, "Decode function")?;
-        write!(out, "{pad}fn decode(&mut self, insn: {}", self.type_name)?;
+        write!(out, "{pad}fn decode(&mut self, insn: {}", self.insn_type)?;
         let (ret_type, ret_fail) = if self.variable_size {
             write!(out, ", insn_size: u32")?;
             ("i32", "0")

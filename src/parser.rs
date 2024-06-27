@@ -59,7 +59,8 @@ where
 /// Decodetree parser.
 pub struct Parser<'src, I = super::DefaultInsn, S = Str> {
     src: &'src str,
-    insn_size: u32,
+    insn_size: Rc<[u32]>,
+    insn_size_max: u32,
     is_fixed_insn: bool,
     fields: HashMap<&'src str, Rc<FieldDef<'src>>>,
     fields_tree: HashMap<Str, Rc<super::FieldDef<S>>>,
@@ -78,8 +79,9 @@ where
     pub fn new(src: &'src str) -> Self {
         Self {
             src,
-            insn_size: I::width(),
-            is_fixed_insn: false,
+            insn_size: Rc::from([I::width()]),
+            insn_size_max: I::width(),
+            is_fixed_insn: true,
             errors: Errors::new(src),
             fields: Default::default(),
             fields_tree: Default::default(),
@@ -89,18 +91,20 @@ where
         }
     }
 
-    /// Override the maximum instruction size in bits.
-    pub fn set_insn_size(mut self, size: u32) -> Self {
-        self.insn_size = size;
-        self
-    }
-
-    /// Set to `true` if the instruction size is fixed.
+    /// Set valid pattern sizes.
     ///
-    /// If `true` the parser will generate errors for instruction patterns with size not equal
-    /// to `insn_size`.
-    pub fn set_insn_fixed_size(mut self, is_fixed_insn: bool) -> Self {
-        self.is_fixed_insn = is_fixed_insn;
+    /// # Panics
+    ///
+    /// If size is empty or max size is greater than `I::width()`.
+    pub fn set_insn_size(mut self, size: &[u32]) -> Self {
+        assert!(!size.is_empty());
+        let mut vec = Vec::from(size);
+        vec.sort();
+        vec.dedup();
+        self.insn_size = Rc::from(vec.into_boxed_slice());
+        self.insn_size_max = self.insn_size.last().copied().unwrap();
+        assert!(self.insn_size_max <= I::width());
+        self.is_fixed_insn = self.insn_size.len() == 1;
         self
     }
 
@@ -108,11 +112,12 @@ where
         if len.value == 0 {
             self.errors.push(len.span, ErrorKind::FieldLenZero);
         }
-        if pos.value >= self.insn_size {
-            self.errors.field_pos(pos.span, self.insn_size, pos.value);
-        } else if pos.value + len.value > self.insn_size {
+        if pos.value >= self.insn_size_max {
             self.errors
-                .field_pos(len.span, self.insn_size, pos.value + len.value);
+                .field_pos(pos.span, self.insn_size_max, pos.value);
+        } else if pos.value + len.value > self.insn_size_max {
+            self.errors
+                .field_pos(len.span, self.insn_size_max, pos.value + len.value);
         }
     }
 
@@ -259,10 +264,11 @@ where
             }
         }
 
-        if pat.size > self.insn_size {
-            self.errors.overflow(def.name, self.insn_size, pat.size);
-        } else if pat.size == 0 || (self.is_fixed_insn && pat.size != self.insn_size) {
-            self.errors.insn_size(def.name, self.insn_size, pat.size);
+        if pat.size > self.insn_size_max {
+            self.errors.overflow(def.name, self.insn_size_max, pat.size);
+        } else if !self.insn_size.contains(&pat.size) {
+            self.errors
+                .insn_size(def.name, self.insn_size.clone(), pat.size);
         }
 
         if !is_format {
@@ -550,10 +556,9 @@ where
     /// # use decodetree::{Parser, Item};
     /// let src = "lui .................... ..... 0110111";
     /// let tree = Parser::<u32, &str>::new(src)
-    ///     .set_insn_fixed_size(true)
     ///     .parse()
     ///     .unwrap();
-    /// let patterns = tree.root.as_slice();
+    /// let patterns = tree.root().as_slice();
     /// let Item::Pattern(p) = &patterns[0] else { panic!() };
     /// assert_eq!(p.name(), &"lui");
     /// ```
@@ -590,11 +595,11 @@ where
             let mut fields: Vec<_> = self.fields_tree.into_values().collect();
             fields.sort_by(|a, b| a.name.cmp(&b.name));
 
-            let mut args: Vec<super::SetDef<S>> =
+            let mut sets: Vec<super::SetDef<S>> =
                 self.args.into_values().map(|i| i.into()).collect();
-            args.sort_by(|a, b| a.name.cmp(&b.name));
+            sets.sort_by(|a, b| a.name.cmp(&b.name));
 
-            Ok(DecodeTree { fields, args, root })
+            Ok(DecodeTree { fields, sets, root })
         } else {
             Err(self.errors)
         }

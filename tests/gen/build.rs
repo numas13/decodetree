@@ -6,8 +6,8 @@ use std::{
 };
 
 use decodetree::{
-    gen::{Gen, Generator, Pad},
-    Pattern,
+    gen::{Generator, Pad},
+    Parser, Pattern,
 };
 
 #[derive(Default)]
@@ -15,7 +15,7 @@ struct Helper {
     opcodes: bool,
 }
 
-impl<T> Gen<T, &'_ str> for Helper {
+impl<T> decodetree::gen::Gen<T, &'_ str> for Helper {
     fn trans_body<W: Write>(
         &mut self,
         out: &mut W,
@@ -65,52 +65,82 @@ impl<T> Gen<T, &'_ str> for Helper {
     }
 }
 
-fn gen<T>(trait_name: &str, path: &str, out: &str, opt: bool)
-where
-    T: Default + std::hash::Hash + std::fmt::LowerHex + Ord + decodetree::Insn,
-{
-    println!("cargo:rerun-if-changed={path}");
-    let src = fs::read_to_string(path).unwrap();
-    let mut tree = match decodetree::from_str::<T, &str>(&src) {
-        Ok(tree) => tree,
-        Err(errors) => {
-            for err in errors.iter(path) {
-                eprintln!("{err}");
-            }
-            std::process::exit(1);
+struct Gen<'a> {
+    path: &'a str,
+    trait_name: &'a str,
+    sizes: &'a [u32],
+    optimize: bool,
+    stubs: bool,
+    variable_size: bool,
+}
+
+impl<'a> Gen<'a> {
+    fn new(path: &'a str) -> Self {
+        Self {
+            path,
+            trait_name: "Decode",
+            sizes: &[32],
+            optimize: false,
+            stubs: true,
+            variable_size: false,
         }
-    };
-    if let Some(parent) = Path::new(out).parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    let mut out = BufWriter::new(File::create(out).unwrap());
-
-    if opt {
-        tree.optimize();
     }
 
-    Generator::builder()
-        .trait_name(trait_name)
-        .stubs(true)
-        .build(&tree, Helper { opcodes: !opt })
-        .generate(&mut out)
-        .unwrap();
+    fn gen<T>(&self, out: &str)
+    where
+        T: Default + std::hash::Hash + std::fmt::LowerHex + Ord + decodetree::Insn,
+    {
+        println!("cargo:rerun-if-changed={}", self.path);
+
+        let src = fs::read_to_string(self.path).unwrap();
+        let parser = Parser::<T, &str>::new(&src).set_insn_size(self.sizes);
+
+        let mut tree = match parser.parse() {
+            Ok(tree) => tree,
+            Err(errors) => {
+                for err in errors.iter(self.path) {
+                    eprintln!("{err}");
+                }
+                std::process::exit(1);
+            }
+        };
+
+        if self.optimize {
+            tree.optimize();
+        }
+
+        if let Some(parent) = Path::new(out).parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let mut out = BufWriter::new(File::create(out).unwrap());
+
+        Generator::builder()
+            .trait_name(self.trait_name)
+            .stubs(self.stubs)
+            .variable_size(self.variable_size)
+            .build(
+                &tree,
+                Helper {
+                    opcodes: !self.optimize,
+                },
+            )
+            .generate(&mut out)
+            .unwrap();
+    }
 }
 
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
 
-    gen::<u32>(
-        "Decode",
-        "src/insn32.decode",
-        &format!("{out_dir}/generated.rs"),
-        false,
-    );
+    let mut gen = Gen::new("src/insn.decode");
+    gen.gen::<u32>(&format!("{out_dir}/generated.rs"));
+    gen.optimize = true;
+    gen.gen::<u32>(&format!("{out_dir}/generated_opt.rs"));
 
-    gen::<u32>(
-        "Decode",
-        "src/insn32.decode",
-        &format!("{out_dir}/generated_opt.rs"),
-        true,
-    );
+    let mut gen = Gen::new("src/insn_vs.decode");
+    gen.sizes = &[8, 16, 24, 32];
+    gen.variable_size = true;
+    gen.gen::<u32>(&format!("{out_dir}/generated_vs.rs"));
+    gen.optimize = true;
+    gen.gen::<u32>(&format!("{out_dir}/generated_vs_opt.rs"));
 }

@@ -45,11 +45,11 @@ impl Dump {
     }
 
     fn dump_fields(&self) {
-        if self.tree.fields.is_empty() {
+        if self.tree.fields().is_empty() {
             return;
         }
         println!("# Fields:");
-        for field in &self.tree.fields {
+        for field in self.tree.fields() {
             print!("%{}", field.name());
             for item in field.items() {
                 print!(" ");
@@ -64,11 +64,11 @@ impl Dump {
     }
 
     fn dump_args(&self) {
-        if self.tree.args.is_empty() {
+        if self.tree.sets().is_empty() {
             return;
         }
         println!("# Args:");
-        for set in &self.tree.args {
+        for set in self.tree.sets() {
             print!("&{}", set.name());
             for arg in set.values() {
                 print!(" {}", arg.name());
@@ -169,7 +169,7 @@ impl Dump {
         println!();
         self.dump_fields();
         self.dump_args();
-        self.dump_group(&self.tree.root, 0);
+        self.dump_group(self.tree.root(), 0);
     }
 
     fn dump(&mut self) {
@@ -199,6 +199,7 @@ impl Dump {
                 }
 
                 decodetree::Generator::builder()
+                    .variable_size(self.cli.variable_size)
                     .build(&self.tree, ())
                     .generate(&mut std::io::stdout())
                     .unwrap();
@@ -214,6 +215,7 @@ struct Cli {
     optimize: bool,
     generate: bool,
     raw: bool,
+    variable_size: bool,
     path: String,
 }
 
@@ -229,6 +231,7 @@ fn parse_cli() -> Cli {
             "-O" => cli.optimize = true,
             "-g" => cli.generate = true,
             "-r" => cli.raw = true,
+            "-v" => cli.variable_size = true,
             "-h" => {
                 println!("parse -d -D -O -g path");
                 process::exit(0);
@@ -255,7 +258,7 @@ fn main() {
         process::exit(1);
     });
 
-    let parser = Parser::new(&src).set_insn_fixed_size(false);
+    let parser = Parser::new(&src).set_insn_size(&[8, 16, 24, 32]);
 
     match parser.parse() {
         Ok(tree) => {

@@ -1,7 +1,8 @@
 //! Code generator for decodetree.
 
 use std::{
-    collections::HashSet,
+    cmp,
+    collections::{HashMap, HashSet},
     fmt,
     hash::Hash,
     io::{self, Write},
@@ -60,6 +61,13 @@ pub trait Gen<T, S = Str> {
         Ok(())
     }
 
+    /// Additional arguments to pass to decode function.
+    ///
+    /// Default implementation calls [`Gen::trans_args`].
+    fn decode_args(&self) -> &[(&str, &str)] {
+        self.trans_args()
+    }
+
     /// Additional attributes for trans functions.
     fn trans_attrs(&self) -> &[&str] {
         &[]
@@ -110,6 +118,7 @@ pub struct GeneratorBuilder {
     zextract: Str,
     sextract: Str,
     stubs: bool,
+    variable_size: bool,
 }
 
 impl Default for GeneratorBuilder {
@@ -120,6 +129,7 @@ impl Default for GeneratorBuilder {
             zextract: Str::from("zextract"),
             sextract: Str::from("sextract"),
             stubs: false,
+            variable_size: false,
         }
     }
 }
@@ -155,6 +165,12 @@ impl GeneratorBuilder {
         self
     }
 
+    /// Generate instruction size checks.
+    pub fn variable_size(mut self, variable_size: bool) -> Self {
+        self.variable_size = variable_size;
+        self
+    }
+
     /// Build the `Generator`.
     pub fn build<T, S, G>(self, tree: &DecodeTree<T, S>, gen: G) -> Generator<T, S, G>
     where
@@ -169,6 +185,7 @@ impl GeneratorBuilder {
             zextract: self.zextract,
             sextract: self.sextract,
             stubs: self.stubs,
+            variable_size: self.variable_size,
             gen,
             tree,
             opcodes: Default::default(),
@@ -184,6 +201,7 @@ pub struct Generator<'a, T = super::DefaultInsn, S = Str, G = ()> {
     zextract: Str,
     sextract: Str,
     stubs: bool,
+    variable_size: bool,
     gen: G,
     tree: &'a DecodeTree<T, S>,
     opcodes: HashSet<&'a str>,
@@ -330,7 +348,7 @@ where
 
     fn gen_args<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         self.gen_comment(out, pad, "Argument sets")?;
-        for args in self.tree.args.iter().filter(|i| !i.is_extern) {
+        for args in self.tree.sets.iter().filter(|i| !i.is_extern) {
             writeln!(out, "{pad}#[allow(non_camel_case_types)]")?;
             if args.items.is_empty() {
                 writeln!(out, "{pad}pub struct args_{};", args.name)?;
@@ -562,7 +580,11 @@ where
         }
         writeln!(out, ") {{")?;
         self.gen.trans_success(out, pad.shift(), pattern)?;
-        writeln!(out, "{}return true;", pad.shift())?;
+        if self.variable_size {
+            writeln!(out, "{}return {};", pad.shift(), pattern.size())?;
+        } else {
+            writeln!(out, "{}return true;", pad.shift())?;
+        }
         writeln!(out, "{pad}}}")?;
         Ok(())
     }
@@ -589,12 +611,22 @@ where
         mut pad: Pad,
         group: &Overlap<T, S>,
         prev: T,
+        mut checked_size: u32,
     ) -> io::Result<()> {
         for i in &group.items {
             match i {
                 OverlapItem::Pattern(pat) => {
-                    self.gen_pattern_comment(out, pad, pat)?;
                     let mask = pat.mask.bit_andn(&prev);
+
+                    let mask_size = mask.size();
+                    if self.variable_size && checked_size < mask_size {
+                        writeln!(out, "{pad}if insn_size < {mask_size} {{")?;
+                        writeln!(out, "{}return -{mask_size};", pad.shift())?;
+                        writeln!(out, "{pad}}}")?;
+                        checked_size = mask_size;
+                    }
+
+                    self.gen_pattern_comment(out, pad, pat)?;
                     let is_mask_non_zero = mask != T::zero();
                     let do_if = is_mask_non_zero || pat.has_conditions();
                     if do_if {
@@ -613,6 +645,13 @@ where
                         pad.right();
                     }
 
+                    let pat_size = pat.size();
+                    if self.variable_size && checked_size < pat_size {
+                        writeln!(out, "{pad}if insn_size < {pat_size} {{")?;
+                        writeln!(out, "{}return -{pat_size};", pad.shift())?;
+                        writeln!(out, "{pad}}}")?;
+                    }
+
                     self.gen_call_trans_func(out, pad, pat)?;
 
                     if do_if {
@@ -621,7 +660,7 @@ where
                     }
                 }
                 OverlapItem::Group(group) => {
-                    self.gen_decode_group(out, pad, group, prev)?;
+                    self.gen_decode_group(out, pad, group, prev, checked_size)?;
                 }
             }
         }
@@ -634,18 +673,56 @@ where
         mut pad: Pad,
         group: &Group<T, S>,
         prev: T,
+        mut checked_size: u32,
     ) -> io::Result<()> {
         let shared = group.shared_mask().bit_andn(&prev);
+        let shared_size = shared.size();
+
+        if self.variable_size && checked_size < shared_size {
+            writeln!(out, "{pad}if insn_size < {shared_size} {{")?;
+            writeln!(out, "{}return -{shared_size};", pad.shift())?;
+            writeln!(out, "{pad}}}")?;
+            writeln!(out)?;
+            checked_size = shared_size;
+        }
 
         writeln!(out, "{pad}match insn & {shared:#x} {{")?;
         pad.right();
+
+        let mut item_sizes = HashMap::<T, u32>::new();
+        if self.variable_size {
+            for item in &group.items {
+                let opcode = item.opcode().bit_and(&shared);
+                let item_size = match item {
+                    Item::Pattern(pattern) => pattern.size(),
+                    _ => item.mask().size(),
+                };
+                if shared_size < item_size {
+                    let e = item_sizes.entry(opcode).or_default();
+                    *e = cmp::max(*e, item_size);
+                }
+            }
+        }
 
         for item in &group.items {
             if let Item::Pattern(pattern) = item {
                 self.gen_pattern_comment(out, pad, pattern)?;
             }
 
-            write!(out, "{pad}{:#x}", item.opcode().bit_and(&shared))?;
+            let opcode = item.opcode().bit_and(&shared);
+
+            let mut item_size = checked_size;
+            if self.variable_size {
+                if let Some(size) = item_sizes.remove(&opcode) {
+                    if item_size < size {
+                        write!(out, "{pad}{opcode:#x} if insn_size < {size} => ")?;
+                        writeln!(out, "return -{size},")?;
+                        item_size = size;
+                    }
+                }
+            }
+
+            write!(out, "{pad}{opcode:#x}")?;
             let exclusive = item.mask().bit_andn(&shared).bit_andn(&prev);
             if exclusive != T::zero() {
                 let exclusive_opcode = item.opcode().bit_and(&exclusive);
@@ -669,10 +746,10 @@ where
                     }
                 }
                 Item::Overlap(overlap) => {
-                    self.gen_decode_overlap(out, pad, overlap, *item.mask())?;
+                    self.gen_decode_overlap(out, pad, overlap, *item.mask(), item_size)?;
                 }
                 Item::Group(group) => {
-                    self.gen_decode_group(out, pad, group, *item.mask())?;
+                    self.gen_decode_group(out, pad, group, *item.mask(), item_size)?;
                 }
             }
 
@@ -689,15 +766,22 @@ where
     }
 
     fn gen_decode<W: Write>(&mut self, out: &mut W, mut pad: Pad) -> io::Result<()> {
+        self.gen_comment(out, pad, "Decode function")?;
         write!(out, "{pad}fn decode(&mut self, insn: {}", self.type_name)?;
+        let (ret_type, ret_fail) = if self.variable_size {
+            write!(out, ", insn_size: u32")?;
+            ("i32", "0")
+        } else {
+            ("bool", "false")
+        };
         for (name, ty) in self.gen.trans_args() {
             write!(out, ", {name}: {ty}")?;
         }
-        writeln!(out, ") -> bool {{")?;
+        writeln!(out, ") -> {ret_type} {{")?;
         pad.right();
-        self.gen_decode_group(out, pad, &self.tree.root, T::zero())?;
+        self.gen_decode_group(out, pad, &self.tree.root, T::zero(), 0)?;
         writeln!(out)?;
-        writeln!(out, "{pad}false")?;
+        writeln!(out, "{pad}{ret_fail}")?;
         pad.left();
         writeln!(out, "{pad}}}")
     }
@@ -719,7 +803,6 @@ where
             self.gen_comment(out, pad, "Translation functions")?;
             self.gen_trans_proto_group(out, pad, &self.tree.root)?;
             self.gen_cond_proto(out, pad)?;
-            self.gen_comment(out, pad, "Decode function")?;
             self.gen_decode(out, pad)?;
             writeln!(out)?;
         }

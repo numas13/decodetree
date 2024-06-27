@@ -1,4 +1,4 @@
-use std::{cmp, fmt};
+use std::{cmp, fmt, rc::Rc};
 
 use nom::{
     error::{ErrorKind as NomErrorKind, FromExternalError, ParseError},
@@ -57,7 +57,7 @@ impl fmt::Display for Token {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ErrorKind<'a> {
     Expected(Expected),
@@ -68,7 +68,7 @@ pub enum ErrorKind<'a> {
     Undefined(Token),
     UndefinedMember(Span<'a>, Span<'a>),
     Overflow(u32, u32),
-    InsnSize(u32, u32),
+    InsnSize(Rc<[u32]>, u32),
     Overlap(Span<'a>),
     InvalidOpcode,
     Nom(NomErrorKind),
@@ -138,7 +138,7 @@ impl fmt::Display for Error<'_> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         use ErrorKind as E;
 
-        match self.kind {
+        match &self.kind {
             E::Expected(i) => write!(fmt, "expected {i}"),
             E::Unexpected => write!(fmt, "unexpected"),
             E::Redefined(token, prev) => {
@@ -153,10 +153,17 @@ impl fmt::Display for Error<'_> {
                 fmt,
                 "instruction size overflow, expected {insn_size} bits but the size is {len} bits"
             ),
-            E::InsnSize(insn_size, len) => write!(
-                fmt,
-                "instruction size must be {insn_size} bits but got {len} bits"
-            ),
+            E::InsnSize(insn_size, len) => {
+                write!(fmt, "pattern size {len} bits is invalid, valid sizes: ")?;
+                for (i, size) in insn_size.iter().enumerate() {
+                    if i == 0 {
+                        write!(fmt, "{size}")?;
+                    } else {
+                        write!(fmt, ", {size}")?;
+                    }
+                }
+                Ok(())
+            }
             E::Overlap(..) => write!(fmt, "pattern overlap"),
             E::InvalidOpcode => write!(fmt, "opcode differs for shared part in an overlap group"),
         }
@@ -400,7 +407,7 @@ impl<'a> Errors<'a> {
         self.push(cur, ErrorKind::Overflow(insn_size, len));
     }
 
-    pub(crate) fn insn_size(&mut self, cur: Span<'a>, insn_size: u32, len: u32) {
+    pub(crate) fn insn_size(&mut self, cur: Span<'a>, insn_size: Rc<[u32]>, len: u32) {
         self.push(cur, ErrorKind::InsnSize(insn_size, len));
     }
 

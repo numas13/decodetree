@@ -3,7 +3,7 @@ use tests_gen::{
     generated_opt,
 };
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 struct Insn {
     opcode: Option<Opcode>,
 }
@@ -49,7 +49,8 @@ fn decode() {
     use generated::Decode;
 
     for (raw, expected) in TEST.iter().copied() {
-        let mut insn = Insn { opcode: None };
+        println!("{raw:08x} {expected:?}");
+        let mut insn = Insn::default();
         insn.decode(raw);
         assert_eq!(insn.opcode, expected);
     }
@@ -60,7 +61,8 @@ fn decode_opt() {
     use generated_opt::Decode;
 
     for (raw, expected) in TEST.iter().copied() {
-        let mut insn = Insn { opcode: None };
+        println!("{raw:08x} {expected:?}");
+        let mut insn = Insn::default();
         insn.decode(raw);
         assert_eq!(insn.opcode, expected);
     }

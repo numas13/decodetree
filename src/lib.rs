@@ -33,6 +33,11 @@ pub trait Insn: Sized + Copy + Clone + Eq + Ord + Hash + LowerHex + Default {
     /// Returns the size in bits of the instruction word.
     fn width() -> u32;
 
+    /// Returns a size of the most non-zero part of the instruction.
+    fn size(&self) -> u32 {
+        Self::width() - self.leading_zeros()
+    }
+
     /// Returns value with all bits set to `0`.
     fn zero() -> Self;
 
@@ -53,6 +58,9 @@ pub trait Insn: Sized + Copy + Clone + Eq + Ord + Hash + LowerHex + Default {
 
     /// The bitwise OR operation.
     fn bit_or(&self, other: &Self) -> Self;
+
+    /// Returns the number of leading zeros.
+    fn leading_zeros(&self) -> u32;
 }
 
 macro_rules! impl_insn {
@@ -90,6 +98,10 @@ macro_rules! impl_insn {
 
             fn bit_or(&self, other: &Self) -> Self {
                 *self | *other
+            }
+
+            fn leading_zeros(&self) -> u32 {
+                <$t>::leading_zeros(*self)
             }
         })+
     );
@@ -703,12 +715,26 @@ impl<I: Insn, S> Group<I, S> {
 /// Container for field definitions, set definitions and patterns.
 #[derive(Clone, Debug, Default)]
 pub struct DecodeTree<I = DefaultInsn, S = Str> {
-    /// Field definitions.
-    pub fields: Vec<Rc<FieldDef<S>>>,
-    /// Set definitions.
-    pub args: Vec<SetDef<S>>,
-    /// The root non-overlap group for this decodetree.
-    pub root: Group<I, S>,
+    fields: Vec<Rc<FieldDef<S>>>,
+    sets: Vec<SetDef<S>>,
+    root: Group<I, S>,
+}
+
+impl<I, S> DecodeTree<I, S> {
+    /// Returns field definitions for this decodetree.
+    pub fn fields(&self) -> &[Rc<FieldDef<S>>] {
+        &self.fields
+    }
+
+    /// Returns set definitions for this decodetree.
+    pub fn sets(&self) -> &[SetDef<S>] {
+        &self.sets
+    }
+
+    /// Returns the root non-overlap group for this decodetree.
+    pub fn root(&self) -> &Group<I, S> {
+        &self.root
+    }
 }
 
 impl<I: Insn, S> DecodeTree<I, S> {
@@ -793,7 +819,7 @@ impl<I: Insn, S> DecodeTree<I, S> {
 ///
 /// let tree = decodetree::from_str::<u16, &str>(&src).unwrap();
 ///
-/// for (i, item) in tree.root.iter().enumerate() {
+/// for (i, item) in tree.root().iter().enumerate() {
 ///     let Item::Pattern(p) = item else { panic!() };
 ///     assert_eq!(p.name(), &["add", "sub"][i]);
 ///

@@ -462,7 +462,7 @@ impl<'a, I> Pattern<I, Span<'a>> {
             match kind {
                 ValueKind::Const(value) => SetValueKind::Const(value),
                 ValueKind::Field(field) => SetValueKind::Field(field),
-                ValueKind::Set(..) => panic!("nested args set"),
+                ValueKind::Set(..) => unreachable!("nested args set"),
             }
         }
 
@@ -494,14 +494,14 @@ impl<'a, I> Pattern<I, Span<'a>> {
                     }
                 }
 
-                // remove last field/const with the same name
+                // replace field/const with the same name
                 if let Some(i) = self.args.iter().position(|i| {
                     (i.is_field() || i.is_const()) && i.name.fragment() == value.name.fragment()
                 }) {
-                    self.args.remove(i);
+                    self.args[i] = value;
+                } else {
+                    self.args.push(value);
                 }
-
-                self.args.push(value);
             }
         }
     }

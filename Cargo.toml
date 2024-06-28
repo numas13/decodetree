@@ -1,7 +1,7 @@
 [package]
 name = "decodetree"
 description = "Decodetree parser and generator"
-version = "0.4.2"
+version = "0.4.3"
 license = "LGPL-3.0-only"
 keywords = ["disassembler", "decodetree"]
 authors = ["Denis Drakhnia <numas13@gmail.com>"]

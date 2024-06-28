@@ -51,8 +51,18 @@ impl fmt::Display for Pad {
 /// Hooks to generate custom code.
 #[allow(unused_variables)]
 pub trait Gen<T, S = Str> {
+    /// Additional attributes for argument sets.
+    fn sets_attrs(&self) -> &[&str] {
+        &[]
+    }
+
     /// Additional attributes for trait.
     fn trait_attrs(&self) -> &[&str] {
+        &[]
+    }
+
+    /// Additional parent traits.
+    fn trait_parents(&self) -> &[&str] {
         &[]
     }
 
@@ -76,6 +86,18 @@ pub trait Gen<T, S = Str> {
     #[allow(unused_variables)]
     fn cond_args(&self, name: &str) -> &[(&str, &str)] {
         &[]
+    }
+
+    /// Filter wich trans function prototypes should be generated.
+    #[allow(unused_variables)]
+    fn trans_proto_check(&self, name: &str) -> bool {
+        true
+    }
+
+    /// Filter wich trans function calls should be generated.
+    #[allow(unused_variables)]
+    fn trans_call_check(&self, name: &str) -> bool {
+        self.trans_proto_check(name)
     }
 
     /// Additional attributes for trans functions.
@@ -133,6 +155,7 @@ pub struct GeneratorBuilder {
     sextract: Str,
     stubs: bool,
     variable_size: bool,
+    args_by_ref: bool,
 }
 
 impl Default for GeneratorBuilder {
@@ -145,6 +168,7 @@ impl Default for GeneratorBuilder {
             sextract: Str::from("sextract"),
             stubs: false,
             variable_size: false,
+            args_by_ref: false,
         }
     }
 }
@@ -192,6 +216,12 @@ impl GeneratorBuilder {
         self
     }
 
+    /// Pass `args_name` to trans function by reference.
+    pub fn args_by_ref(mut self, by_ref: bool) -> Self {
+        self.args_by_ref = by_ref;
+        self
+    }
+
     /// Build the `Generator`.
     pub fn build<T, S, G>(self, tree: &DecodeTree<T, S>, gen: G) -> Generator<T, S, G>
     where
@@ -213,6 +243,7 @@ impl GeneratorBuilder {
             sextract: self.sextract,
             stubs: self.stubs,
             variable_size: self.variable_size,
+            args_by_ref: self.args_by_ref,
             gen,
             tree,
             opcodes: Default::default(),
@@ -230,6 +261,7 @@ pub struct Generator<'a, T = super::DefaultInsn, S = Str, G = ()> {
     sextract: Str,
     stubs: bool,
     variable_size: bool,
+    args_by_ref: bool,
     gen: G,
     tree: &'a DecodeTree<T, S>,
     opcodes: HashSet<&'a str>,
@@ -271,6 +303,10 @@ where
 
         for i in &pattern.cond {
             self.conditions.insert(&i.name);
+        }
+
+        if !self.gen.trans_proto_check(pattern.name()) {
+            return Ok(());
         }
 
         write!(out, "{pad}fn trans_{}(&mut self", pattern.name())?;
@@ -383,6 +419,9 @@ where
     fn gen_args<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         self.gen_comment(out, pad, "Argument sets")?;
         for args in self.tree.sets.iter().filter(|i| !i.is_extern) {
+            for attr in self.gen.sets_attrs() {
+                writeln!(out, "{attr}")?;
+            }
             writeln!(out, "{pad}#[allow(non_camel_case_types)]")?;
             if args.items.is_empty() {
                 writeln!(out, "{pad}pub struct args_{};", args.name)?;
@@ -604,29 +643,44 @@ where
     fn gen_call_trans_func<W: Write>(
         &mut self,
         out: &mut W,
-        pad: Pad,
+        mut pad: Pad,
         pattern: &Pattern<T, S>,
     ) -> io::Result<()> {
         self.gen_extract_args(out, pattern, pad)?;
-        write!(out, "{pad}if Self::trans_{}(self", pattern.name)?;
-        for (name, _) in self.gen.trans_args(pattern.name()) {
-            write!(out, ", {name}")?;
+
+        let gen_call = self.gen.trans_call_check(pattern.name());
+        if gen_call {
+            write!(out, "{pad}if Self::trans_{}(self", pattern.name)?;
+            for (name, _) in self.gen.trans_args(pattern.name()) {
+                write!(out, ", {name}")?;
+            }
+            for arg in pattern
+                .args
+                .iter()
+                .filter(|i| self.gen.trans_check_arg(pattern.name(), i.name()))
+            {
+                if self.args_by_ref && arg.is_set() {
+                    write!(out, ", &{}", arg.name())?;
+                } else {
+                    write!(out, ", {}", arg.name())?;
+                }
+            }
+            writeln!(out, ") {{")?;
+            pad.right();
         }
-        for arg in pattern
-            .args
-            .iter()
-            .filter(|i| self.gen.trans_check_arg(pattern.name(), i.name()))
-        {
-            write!(out, ", {}", arg.name())?;
-        }
-        writeln!(out, ") {{")?;
-        self.gen.trans_success(out, pad.shift(), pattern)?;
+
+        self.gen.trans_success(out, pad, pattern)?;
+
         if self.variable_size {
-            writeln!(out, "{}return {};", pad.shift(), pattern.size())?;
+            writeln!(out, "{pad}return {};", pattern.size())?;
         } else {
-            writeln!(out, "{}return true;", pad.shift())?;
+            writeln!(out, "{pad}return true;")?;
         }
-        writeln!(out, "{pad}}}")?;
+
+        if gen_call {
+            pad.left();
+            writeln!(out, "{pad}}}")?;
+        }
         Ok(())
     }
 
@@ -843,7 +897,11 @@ where
         }
         writeln!(out, "#[allow(clippy::unnecessary_cast)]")?;
         writeln!(out, "#[allow(clippy::collapsible_if)]")?;
-        writeln!(out, "{pad}pub trait {}: Sized {{", self.trait_name)?;
+        write!(out, "{pad}pub trait {}: Sized", self.trait_name)?;
+        for parent in self.gen.trait_parents() {
+            write!(out, " + {parent}")?;
+        }
+        writeln!(out, " {{")?;
         pad.right();
         self.gen_extern_func_proto(out, pad)?;
         self.gen_extract_fields(out, pad)?;

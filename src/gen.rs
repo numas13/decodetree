@@ -411,7 +411,7 @@ where
 
                 set.insert(i);
                 let ty = &self.value_type;
-                write!(out, "{pad}fn {i}(&mut self, value: {ty}) -> {ty}")?;
+                write!(out, "{pad}fn {i}(&self, value: {ty}) -> {ty}")?;
                 if self.stubs {
                     writeln!(out, " {{ todo!(\"{i}\") }}")?;
                 } else {
@@ -507,7 +507,7 @@ where
             let name = field.name();
             writeln!(
                 out,
-                "{pad}fn extract_{name}(&mut self, insn: {insn_ty}) -> {val_ty} {{",
+                "{pad}fn extract_{name}(&self, insn: {insn_ty}) -> {val_ty} {{",
             )?;
             self.gen_extract_field_body(out, field, pad.shift())?;
             writeln!(out, "{pad}}}",)?;
@@ -641,8 +641,8 @@ where
                 write!(out, " && ")?;
             }
             let inv = if cond.invert { "!" } else { "" };
-            write!(out, "{inv}self.cond_{}(", cond.name)?;
-            for (i, (arg, _)) in self.gen.cond_args(pat.name()).iter().enumerate() {
+            write!(out, "{inv}self.cond_{}(", cond.name())?;
+            for (i, (arg, _)) in self.gen.cond_args(cond.name()).iter().enumerate() {
                 if i != 0 {
                     write!(out, ", ")?;
                 }

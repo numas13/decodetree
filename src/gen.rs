@@ -62,24 +62,37 @@ pub trait Gen<T, S = Str> {
     }
 
     /// Additional arguments to pass to decode function.
-    ///
-    /// Default implementation calls [`Gen::trans_args`].
     fn decode_args(&self) -> &[(&str, &str)] {
-        self.trans_args()
+        &[]
+    }
+
+    /// Additional attributes for condition functions.
+    #[allow(unused_variables)]
+    fn cond_attrs(&self, name: &str) -> &[&str] {
+        &[]
+    }
+
+    /// Additional arguments for condition functions.
+    #[allow(unused_variables)]
+    fn cond_args(&self, name: &str) -> &[(&str, &str)] {
+        &[]
     }
 
     /// Additional attributes for trans functions.
-    fn trans_attrs(&self) -> &[&str] {
+    #[allow(unused_variables)]
+    fn trans_attrs(&self, name: &str) -> &[&str] {
         &[]
     }
 
     /// Filter arguments to trans functions.
-    fn trans_check_arg(&self, name: &str) -> bool {
+    #[allow(unused_variables)]
+    fn trans_check_arg(&self, name: &str, arg: &str) -> bool {
         true
     }
 
     /// Additional arguments to pass to trans functions.
-    fn trans_args(&self) -> &[(&str, &str)] {
+    #[allow(unused_variables)]
+    fn trans_args(&self, name: &str) -> &[(&str, &str)] {
         &[]
     }
 
@@ -260,14 +273,14 @@ where
             self.conditions.insert(&i.name);
         }
 
-        write!(out, "{pad}fn trans_{}(&mut self", pattern.name)?;
-        for (name, ty) in self.gen.trans_args() {
+        write!(out, "{pad}fn trans_{}(&mut self", pattern.name())?;
+        for (name, ty) in self.gen.trans_args(pattern.name()) {
             write!(out, ", {name}: {ty}")?;
         }
         for value in pattern
             .args
             .iter()
-            .filter(|i| self.gen.trans_check_arg(i.name().as_ref()))
+            .filter(|i| self.gen.trans_check_arg(pattern.name(), i.name().as_ref()))
         {
             let name = value.name();
             write!(out, ", {name}: ")?;
@@ -355,7 +368,14 @@ where
 
         self.gen_comment(out, pad, "Conditions")?;
         for i in &list {
-            writeln!(out, "{pad}fn cond_{i}(&self) -> bool;")?;
+            for attr in self.gen.cond_attrs(i) {
+                writeln!(out, "{attr}")?;
+            }
+            write!(out, "{pad}fn cond_{i}(&self")?;
+            for (arg, ty) in self.gen.cond_args(i) {
+                write!(out, ", {arg}: {ty}")?;
+            }
+            writeln!(out, ") -> bool;")?;
         }
         writeln!(out)
     }
@@ -543,10 +563,14 @@ where
     fn gen_extract_args<W: Write>(
         &self,
         out: &mut W,
-        i: &Pattern<T, S>,
+        pattern: &Pattern<T, S>,
         pad: Pad,
     ) -> io::Result<()> {
-        for arg in i.args.iter().filter(|i| self.gen.trans_check_arg(i.name())) {
+        for arg in pattern
+            .args
+            .iter()
+            .filter(|i| self.gen.trans_check_arg(pattern.name(), i.name()))
+        {
             let name = arg.name();
             match arg.kind() {
                 ValueKind::Set(set) => {
@@ -585,13 +609,13 @@ where
     ) -> io::Result<()> {
         self.gen_extract_args(out, pattern, pad)?;
         write!(out, "{pad}if Self::trans_{}(self", pattern.name)?;
-        for (name, _) in self.gen.trans_args() {
+        for (name, _) in self.gen.trans_args(pattern.name()) {
             write!(out, ", {name}")?;
         }
         for arg in pattern
             .args
             .iter()
-            .filter(|i| self.gen.trans_check_arg(i.name()))
+            .filter(|i| self.gen.trans_check_arg(pattern.name(), i.name()))
         {
             write!(out, ", {}", arg.name())?;
         }
@@ -617,7 +641,14 @@ where
                 write!(out, " && ")?;
             }
             let inv = if cond.invert { "!" } else { "" };
-            write!(out, "{inv}self.cond_{}()", cond.name)?;
+            write!(out, "{inv}self.cond_{}(", cond.name)?;
+            for (i, (arg, _)) in self.gen.cond_args(pat.name()).iter().enumerate() {
+                if i != 0 {
+                    write!(out, ", ")?;
+                }
+                write!(out, "{arg}")?;
+            }
+            write!(out, ")")?;
         }
         Ok(())
     }
@@ -791,7 +822,7 @@ where
         } else {
             ("bool", "false")
         };
-        for (name, ty) in self.gen.trans_args() {
+        for (name, ty) in self.gen.decode_args() {
             write!(out, ", {name}: {ty}")?;
         }
         writeln!(out, ") -> {ret_type} {{")?;

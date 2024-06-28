@@ -559,7 +559,10 @@ where
     ///     .parse()
     ///     .unwrap();
     /// let patterns = tree.root().as_slice();
-    /// let Item::Pattern(p) = &patterns[0] else { panic!() };
+    /// let p = match &patterns[0] {
+    ///     Item::Pattern(p) => p,
+    ///     _ => panic!(),
+    /// };
     /// assert_eq!(p.name(), &"lui");
     /// ```
     pub fn parse(mut self) -> Result<DecodeTree<I, S>, Errors<'src>> {

@@ -820,14 +820,20 @@ impl<I: Insn, S> DecodeTree<I, S> {
 /// let tree = decodetree::from_str::<u16, &str>(&src).unwrap();
 ///
 /// for (i, item) in tree.root().iter().enumerate() {
-///     let Item::Pattern(p) = item else { panic!() };
+///     let p = match item {
+///         Item::Pattern(p) => p,
+///         _ => panic!(),
+///     };
 ///     assert_eq!(p.name(), &["add", "sub"][i]);
 ///
 ///     let args = p.values();
 ///     assert!(args[0].is_set());
 ///     assert_eq!(args[0].name(), &"r");
 ///
-///     let ValueKind::Set(set) = args[0].kind() else { panic!() };
+///     let set = match args[0].kind() {
+///         ValueKind::Set(set) => set,
+///         _ => panic!(),
+///     };
 ///     assert_eq!(set[0].name(), &"rd");
 ///     assert_eq!(set[1].name(), &"rs");
 /// }

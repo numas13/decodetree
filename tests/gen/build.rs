@@ -6,7 +6,7 @@ use std::{
 };
 
 use decodetree::{
-    gen::{Generator, Pad},
+    gen::{Gen, Pad},
     Parser, Pattern,
 };
 
@@ -15,7 +15,11 @@ struct Helper {
     opcodes: bool,
 }
 
-impl<T> decodetree::gen::Gen<T, &'_ str> for Helper {
+impl<T> Gen<T, &'_ str> for Helper {
+    fn trans_args(&self, _: &str) -> &[(&str, &str)] {
+        &[("insn", "u32")]
+    }
+
     fn trans_body<W: Write>(
         &mut self,
         out: &mut W,
@@ -52,6 +56,7 @@ impl<T> decodetree::gen::Gen<T, &'_ str> for Helper {
             };
 
             writeln!(out)?;
+            writeln!(out, "#[allow(non_camel_case_types)]")?;
             writeln!(out, "{pad}#[derive(Copy, Clone, Debug, PartialEq, Eq)]")?;
             writeln!(out, "{pad}pub enum Opcode {{")?;
             pad.right();
@@ -65,7 +70,7 @@ impl<T> decodetree::gen::Gen<T, &'_ str> for Helper {
     }
 }
 
-struct Gen<'a> {
+struct Generate<'a> {
     path: &'a str,
     trait_name: &'a str,
     sizes: &'a [u32],
@@ -74,7 +79,7 @@ struct Gen<'a> {
     variable_size: bool,
 }
 
-impl<'a> Gen<'a> {
+impl<'a> Generate<'a> {
     fn new(path: &'a str) -> Self {
         Self {
             path,
@@ -114,7 +119,7 @@ impl<'a> Gen<'a> {
         }
         let mut out = BufWriter::new(File::create(out).unwrap());
 
-        Generator::builder()
+        decodetree::Generator::builder()
             .trait_name(self.trait_name)
             .stubs(self.stubs)
             .variable_size(self.variable_size)
@@ -132,15 +137,18 @@ impl<'a> Gen<'a> {
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
 
-    let mut gen = Gen::new("src/insn.decode");
+    let mut gen = Generate::new("src/insn.decode");
     gen.gen::<u32>(&format!("{out_dir}/generated.rs"));
     gen.optimize = true;
     gen.gen::<u32>(&format!("{out_dir}/generated_opt.rs"));
 
-    let mut gen = Gen::new("src/insn_vs.decode");
+    let mut gen = Generate::new("src/insn_vs.decode");
     gen.sizes = &[8, 16, 24, 32];
     gen.variable_size = true;
     gen.gen::<u32>(&format!("{out_dir}/generated_vs.rs"));
     gen.optimize = true;
     gen.gen::<u32>(&format!("{out_dir}/generated_vs_opt.rs"));
+
+    let gen = Generate::new("src/extract.decode");
+    gen.gen::<u32>(&format!("{out_dir}/generated_extract.rs"));
 }

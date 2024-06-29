@@ -26,3 +26,9 @@ pub mod generated_vs_opt {
 
     include!(concat!(env!("OUT_DIR"), "/generated_vs_opt.rs"));
 }
+
+#[allow(dead_code)]
+pub mod generated_extract {
+    use crate::utils::{sextract, zextract};
+    include!(concat!(env!("OUT_DIR"), "/generated_extract.rs"));
+}

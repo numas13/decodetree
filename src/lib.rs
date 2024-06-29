@@ -13,7 +13,7 @@ mod parser;
 #[cfg(feature = "gen")]
 pub mod gen;
 
-use std::{cmp, collections::HashMap, fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::Rc};
+use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::Rc};
 
 use crate::parser::Span;
 
@@ -134,6 +134,7 @@ impl UnnamedField {
         self.sxt
     }
 
+    #[cfg(feature = "gen")]
     fn required_size(&self) -> u32 {
         self.pos + self.len
     }
@@ -217,6 +218,7 @@ impl<S> FieldDef<S> {
         self.items.iter()
     }
 
+    #[cfg(feature = "gen")]
     fn required_size(&self) -> u32 {
         let mut max = 0;
         for item in &self.items {
@@ -224,7 +226,7 @@ impl<S> FieldDef<S> {
                 FieldItem::Field(field) => field.required_size(),
                 FieldItem::FieldRef(field_ref) => field_ref.field.required_size(),
             };
-            max = cmp::max(max, size);
+            max = std::cmp::max(max, size);
         }
         max
     }

@@ -7,12 +7,129 @@ use std::{
     hash::Hash,
     io::{self, Write},
     ops::Deref,
+    rc::Rc,
 };
 
 use crate::{
     DecodeTree, Field, FieldDef, FieldItem, Group, Insn, Item, Overlap, OverlapItem, Pattern,
     SetValue, SetValueKind, Str, ValueKind,
 };
+
+type FieldUsageInfo<S = Str> = HashMap<S, (usize, Rc<FieldDef<S>>)>;
+
+trait FieldUsage<S = Str> {
+    /// Collect field usage statistics.
+    ///
+    /// Returns the number of processed patterns.
+    fn field_usage(&self, output: &mut FieldUsageInfo<S>) -> usize;
+}
+
+impl<S> FieldUsage<S> for Rc<FieldDef<S>>
+where
+    S: Clone + Eq + Hash,
+{
+    fn field_usage(&self, output: &mut FieldUsageInfo<S>) -> usize {
+        for item in self.items() {
+            if let FieldItem::FieldRef(field_ref) = item {
+                field_ref.field.field_usage(output);
+            }
+        }
+
+        match output.get_mut(&self.name) {
+            Some(entry) => {
+                entry.0 += 1;
+            }
+            None => {
+                output.insert(self.name.clone(), (1, self.clone()));
+            }
+        }
+
+        0
+    }
+}
+
+impl<S> FieldUsage<S> for Field<S>
+where
+    S: Clone + Eq + Hash,
+{
+    fn field_usage(&self, output: &mut FieldUsageInfo<S>) -> usize {
+        if let Self::FieldRef(def) = self {
+            for item in def.items() {
+                if let FieldItem::FieldRef(field_ref) = item {
+                    field_ref.field.field_usage(output);
+                }
+            }
+
+            match output.get_mut(&def.name) {
+                Some(entry) => {
+                    entry.0 += 1;
+                }
+                None => {
+                    output.insert(def.name.clone(), (1, def.clone()));
+                }
+            }
+        }
+
+        0
+    }
+}
+
+impl<I, S> FieldUsage<S> for Pattern<I, S>
+where
+    S: Clone + Eq + Hash,
+{
+    fn field_usage(&self, output: &mut FieldUsageInfo<S>) -> usize {
+        for i in &self.args {
+            match i.kind() {
+                ValueKind::Set(values) => {
+                    for i in values {
+                        if let SetValueKind::Field(field) = i.kind() {
+                            field.field_usage(output);
+                        }
+                    }
+                }
+                ValueKind::Field(field) => {
+                    field.field_usage(output);
+                }
+                _ => {}
+            }
+        }
+        1
+    }
+}
+
+impl<I, S> FieldUsage<S> for Overlap<I, S>
+where
+    S: Clone + Eq + Hash,
+{
+    fn field_usage(&self, output: &mut HashMap<S, (usize, Rc<FieldDef<S>>)>) -> usize {
+        let mut count = 0;
+        for item in &self.items {
+            count += match item {
+                OverlapItem::Pattern(i) => i.field_usage(output),
+                OverlapItem::Group(i) => i.field_usage(output),
+            };
+        }
+        count
+    }
+}
+
+impl<I, S> FieldUsage<S> for Group<I, S>
+where
+    S: Clone + Eq + Hash,
+{
+    fn field_usage(&self, output: &mut FieldUsageInfo<S>) -> usize {
+        let mut count = 0;
+        for item in &self.items {
+            count += match item {
+                Item::Pattern(i) => i.field_usage(output),
+                Item::Overlap(i) => i.field_usage(output),
+                Item::Group(i) => i.field_usage(output),
+            };
+        }
+        count
+    }
+}
 
 /// Helper to align generated code.
 #[derive(Copy, Clone)]
@@ -156,6 +273,8 @@ pub struct GeneratorBuilder {
     stubs: bool,
     variable_size: bool,
     args_by_ref: bool,
+    preload_field_max: u32,
+    preload_field_usage: f64,
 }
 
 impl Default for GeneratorBuilder {
@@ -169,6 +288,8 @@ impl Default for GeneratorBuilder {
             stubs: false,
             variable_size: false,
             args_by_ref: false,
+            preload_field_max: 5,
+            preload_field_usage: 33.0,
         }
     }
 }
@@ -222,6 +343,22 @@ impl GeneratorBuilder {
         self
     }
 
+    /// Set how many fields can be preloaded at once.
+    ///
+    /// Set `0` to disable fields preloading.
+    pub fn preload_field_max(mut self, count: u32) -> Self {
+        self.preload_field_max = count;
+        self
+    }
+
+    /// Only fields used by `usage`% patterns will be preloaded.
+    ///
+    /// Set `0.0` to disable this filter.
+    pub fn preload_field_usage(mut self, usage: f64) -> Self {
+        self.preload_field_usage = usage;
+        self
+    }
+
     /// Build the `Generator`.
     pub fn build<T, S, G>(self, tree: &DecodeTree<T, S>, gen: G) -> Generator<T, S, G>
     where
@@ -244,11 +381,102 @@ impl GeneratorBuilder {
             stubs: self.stubs,
             variable_size: self.variable_size,
             args_by_ref: self.args_by_ref,
+            preload_field_max: self.preload_field_max,
+            preload_field_usage: self.preload_field_usage,
             gen,
             tree,
             opcodes: Default::default(),
             conditions: Default::default(),
         }
+    }
+}
+
+#[derive(Clone)]
+struct Scope<T, S> {
+    // The bitmask checked in a parent scope.
+    mask: T,
+    // The instruction size checked in a parent scope.
+    size: u32,
+
+    preload_field_max: u32,
+    preload_field_usage: f64,
+    preloaded_fields: HashMap<S, Rc<FieldDef<S>>>,
+}
+
+impl<T, S> Scope<T, S>
+where
+    T: Insn,
+    S: Clone + Eq + Hash + fmt::Display,
+{
+    fn new<G>(generator: &Generator<T, S, G>) -> Self {
+        Self {
+            mask: T::zero(),
+            size: 0,
+            preload_field_max: generator.preload_field_max,
+            preload_field_usage: generator.preload_field_usage,
+            preloaded_fields: Default::default(),
+        }
+    }
+
+    fn child(&self, mask: T, size: u32) -> Self {
+        Self {
+            mask,
+            size,
+            preload_field_max: self.preload_field_max,
+            preload_field_usage: self.preload_field_usage,
+            preloaded_fields: self.preloaded_fields.clone(),
+        }
+    }
+
+    fn preload_fields(
+        &mut self,
+        out: &mut impl Write,
+        pad: Pad,
+        item: &dyn FieldUsage<S>,
+    ) -> io::Result<()> {
+        let mut fields = Default::default();
+        let pattern_count = item.field_usage(&mut fields) as f64;
+        let mut fields: Vec<_> = fields.into_values().collect();
+        fields.sort_by(|(a, _), (b, _)| b.cmp(a));
+
+        // writeln!(out, "{pad}// Fields usage statistics:")?;
+        // writeln!(out, "{pad}// ")?;
+        // writeln!(out, "{pad}//  count | patterns | field")?;
+        // writeln!(out, "{pad}//--------|----------|-------------")?;
+        // for (count, field) in &fields {
+        //     let usage = *count as f64 / pattern_count * 100.0;
+        //     writeln!(out, "{pad}//  {count:>5} | {usage:7.1}% | {}", field.name())?;
+        // }
+        // writeln!(out)?;
+
+        let mut n = 0;
+        for (count, field) in &fields {
+            let usage = *count as f64 / pattern_count * 100.0;
+            if usage < self.preload_field_usage {
+                break;
+            }
+            let name = field.name();
+            if self.is_preloaded_field(name) {
+                continue;
+            }
+            n += 1;
+            if n > self.preload_field_max {
+                break;
+            }
+            writeln!(out, "{pad}// {count:} uses in {usage:.1}% patterns")?;
+            writeln!(out, "{pad}let {name} = self.extract_{name}(insn);")?;
+            self.preloaded_fields.insert(name.clone(), field.clone());
+        }
+
+        if n != 0 {
+            writeln!(out)?;
+        }
+
+        Ok(())
+    }
+
+    fn is_preloaded_field(&self, name: &S) -> bool {
+        self.preloaded_fields.contains_key(name)
     }
 }
 
@@ -262,6 +490,8 @@ pub struct Generator<'a, T = super::DefaultInsn, S = Str, G = ()> {
     stubs: bool,
     variable_size: bool,
     args_by_ref: bool,
+    preload_field_max: u32,
+    preload_field_usage: f64,
     gen: G,
     tree: &'a DecodeTree<T, S>,
     opcodes: HashSet<&'a str>,
@@ -278,7 +508,7 @@ impl Generator<'_> {
 impl<'a, T, S: 'a, G> Generator<'a, T, S, G>
 where
     T: Insn,
-    S: Eq + Hash + fmt::Display + Deref<Target = str>,
+    S: Clone + Eq + Hash + fmt::Display + Deref<Target = str>,
     G: Gen<T, S>,
 {
     fn gen_comment<W: Write>(&self, out: &mut W, pad: Pad, msg: &str) -> io::Result<()> {
@@ -495,7 +725,11 @@ where
                         &self.zextract
                     };
                     let name = field.name();
-                    write!(out, "{func}(Self::extract_{name}(insn), 0, {len}) as {ty}")?;
+                    let insn_type = &self.insn_type;
+                    write!(
+                        out,
+                        "{func}(self.extract_{name}(insn) as {insn_type}, 0, {len}) as {ty}"
+                    )?;
                 }
             }
             if field.func.is_some() {
@@ -555,11 +789,22 @@ where
         Ok(())
     }
 
-    fn gen_extract_field<W: Write>(&self, out: &mut W, field: &Field<S>) -> io::Result<()> {
+    fn gen_extract_field<W: Write>(
+        &self,
+        out: &mut W,
+        scope: &Scope<T, S>,
+        arg: Option<&S>,
+        sep: char,
+        field: &Field<S>,
+    ) -> io::Result<()> {
         match field {
             Field::FieldRef(field) => {
                 let name = field.name();
-                write!(out, "self.extract_{name}(insn)")?;
+                if !scope.is_preloaded_field(name) {
+                    write!(out, "{sep} self.extract_{name}(insn)")?;
+                } else if arg.map(|arg| arg != name).unwrap_or(true) {
+                    write!(out, "{sep} {name}")?;
+                }
             }
             Field::Field(field) => {
                 let pos = field.pos();
@@ -569,7 +814,11 @@ where
                 } else {
                     &self.zextract
                 };
-                write!(out, "{func}(insn, {pos}, {len}) as {}", self.value_type)?;
+                write!(
+                    out,
+                    "{sep} {func}(insn, {pos}, {len}) as {}",
+                    self.value_type
+                )?;
             }
         }
         Ok(())
@@ -579,16 +828,19 @@ where
         &self,
         out: &mut W,
         pad: Pad,
+        scope: &Scope<T, S>,
         name: &str,
         items: &[SetValue<S>],
     ) -> io::Result<()> {
         writeln!(out, "{pad}let {name} = args_{name} {{")?;
         let p = pad.shift();
         for arg in items {
-            write!(out, "{p}{}: ", arg.name)?;
+            write!(out, "{p}{}", arg.name())?;
             match arg.kind() {
-                SetValueKind::Field(f) => self.gen_extract_field(out, f)?,
-                SetValueKind::Const(v) => write!(out, "{v}")?,
+                SetValueKind::Field(f) => {
+                    self.gen_extract_field(out, scope, Some(arg.name()), ':', f)?
+                }
+                SetValueKind::Const(v) => write!(out, ": {v}")?,
             }
             if let Some(ref ty) = arg.ty {
                 write!(out, " as {ty}")?;
@@ -604,6 +856,7 @@ where
         out: &mut W,
         pattern: &Pattern<T, S>,
         pad: Pad,
+        scope: &Scope<T, S>,
     ) -> io::Result<()> {
         for arg in pattern
             .args
@@ -613,11 +866,11 @@ where
             let name = arg.name();
             match arg.kind() {
                 ValueKind::Set(set) => {
-                    self.gen_extract_set(out, pad, name, set.as_slice())?;
+                    self.gen_extract_set(out, pad, scope, name, set.as_slice())?;
                 }
                 ValueKind::Field(f) => {
-                    write!(out, "{pad}let {name} = ")?;
-                    self.gen_extract_field(out, f)?;
+                    write!(out, "{pad}let {name} ")?;
+                    self.gen_extract_field(out, scope, None, '=', f)?;
                     writeln!(out, ";")?;
                 }
                 ValueKind::Const(v) => {
@@ -645,8 +898,9 @@ where
         out: &mut W,
         mut pad: Pad,
         pattern: &Pattern<T, S>,
+        scope: &Scope<T, S>,
     ) -> io::Result<()> {
-        self.gen_extract_args(out, pattern, pad)?;
+        self.gen_extract_args(out, pattern, pad, scope)?;
 
         let gen_call = self.gen.trans_call_check(pattern.name());
         if gen_call {
@@ -712,26 +966,20 @@ where
         out: &mut W,
         mut pad: Pad,
         group: &Overlap<T, S>,
-        prev: T,
-        mut checked_size: u32,
+        mut scope: Scope<T, S>,
     ) -> io::Result<()> {
+        scope.preload_fields(out, pad, group)?;
+
         for i in &group.items {
             match i {
                 OverlapItem::Pattern(pat) => {
-                    let mask = pat.mask.bit_andn(&prev);
+                    let mask = pat.mask.bit_andn(&scope.mask);
 
-                    let mask_size = mask.size();
-                    if self.variable_size && checked_size < mask_size {
-                        writeln!(out, "{pad}if insn_size < {mask_size} {{")?;
-                        writeln!(out, "{}return -{mask_size};", pad.shift())?;
-                        writeln!(out, "{pad}}}")?;
-                        checked_size = mask_size;
-                    }
+                    scope.size = self.gen_check_insn_size(out, pad, scope.size, mask.size())?;
 
                     self.gen_pattern_comment(out, pad, pat)?;
                     let is_mask_non_zero = mask != T::zero();
-                    let do_if = is_mask_non_zero || pat.has_conditions();
-                    if do_if {
+                    if is_mask_non_zero || pat.has_conditions() {
                         write!(out, "{pad}if ")?;
                         if pat.has_conditions() {
                             self.gen_pattern_conditions(out, pad, pat)?;
@@ -740,33 +988,44 @@ where
                             write!(out, " && ")?;
                         }
                         if is_mask_non_zero {
-                            let opcode = pat.opcode.bit_andn(&prev);
+                            let opcode = pat.opcode.bit_andn(&scope.mask);
                             write!(out, "insn & {mask:#x} == {opcode:#x}")?;
                         }
-                        writeln!(out, " {{ ")?;
-                        pad.right();
+                        write!(out, " ")?;
+                    } else {
+                        write!(out, "{pad}")?;
                     }
 
-                    let pat_size = pat.size();
-                    if self.variable_size && checked_size < pat_size {
-                        writeln!(out, "{pad}if insn_size < {pat_size} {{")?;
-                        writeln!(out, "{}return -{pat_size};", pad.shift())?;
-                        writeln!(out, "{pad}}}")?;
-                    }
-
-                    self.gen_call_trans_func(out, pad, pat)?;
-
-                    if do_if {
-                        pad.left();
-                        writeln!(out, "{pad}}}")?;
-                    }
+                    writeln!(out, "{{ ")?;
+                    pad.right();
+                    self.gen_check_insn_size(out, pad, scope.size, pat.size())?;
+                    self.gen_call_trans_func(out, pad, pat, &scope)?;
+                    pad.left();
+                    writeln!(out, "{pad}}}")?;
                 }
                 OverlapItem::Group(group) => {
-                    self.gen_decode_group(out, pad, group, prev, checked_size)?;
+                    self.gen_decode_group(out, pad, group, scope.clone())?;
                 }
             }
         }
         Ok(())
+    }
+
+    fn gen_check_insn_size(
+        &self,
+        out: &mut impl Write,
+        pad: Pad,
+        old_size: u32,
+        size: u32,
+    ) -> io::Result<u32> {
+        if self.variable_size && old_size < size {
+            writeln!(out, "{pad}if insn_size < {size} {{")?;
+            writeln!(out, "{}return -{size};", pad.shift())?;
+            writeln!(out, "{pad}}}")?;
+            Ok(size)
+        } else {
+            Ok(old_size)
+        }
     }
 
     fn gen_decode_group<W: Write>(
@@ -774,19 +1033,14 @@ where
         out: &mut W,
         mut pad: Pad,
         group: &Group<T, S>,
-        prev: T,
-        mut checked_size: u32,
+        mut scope: Scope<T, S>,
     ) -> io::Result<()> {
-        let shared = group.shared_mask().bit_andn(&prev);
+        let shared = group.shared_mask().bit_andn(&scope.mask);
         let shared_size = shared.size();
 
-        if self.variable_size && checked_size < shared_size {
-            writeln!(out, "{pad}if insn_size < {shared_size} {{")?;
-            writeln!(out, "{}return -{shared_size};", pad.shift())?;
-            writeln!(out, "{pad}}}")?;
-            writeln!(out)?;
-            checked_size = shared_size;
-        }
+        scope.size = self.gen_check_insn_size(out, pad, scope.size, shared_size)?;
+
+        scope.preload_fields(out, pad, group)?;
 
         writeln!(out, "{pad}match insn & {shared:#x} {{")?;
         pad.right();
@@ -813,7 +1067,7 @@ where
 
             let opcode = item.opcode().bit_and(&shared);
 
-            let mut item_size = checked_size;
+            let mut item_size = scope.size;
             if self.variable_size {
                 if let Some(size) = item_sizes.remove(&opcode) {
                     if item_size < size {
@@ -825,7 +1079,7 @@ where
             }
 
             write!(out, "{pad}{opcode:#x}")?;
-            let exclusive = item.mask().bit_andn(&shared).bit_andn(&prev);
+            let exclusive = item.mask().bit_andn(&shared).bit_andn(&scope.mask);
             if exclusive != T::zero() {
                 let exclusive_opcode = item.opcode().bit_and(&exclusive);
                 write!(out, " if insn & {exclusive:#x} == {exclusive_opcode:#x}")?;
@@ -841,17 +1095,19 @@ where
                         writeln!(out, " {{")?;
                         pad.right();
                     }
-                    self.gen_call_trans_func(out, pad, pattern)?;
+                    self.gen_call_trans_func(out, pad, pattern, &scope)?;
                     if pattern.has_conditions() {
                         pad.left();
                         writeln!(out, "{pad}}}")?;
                     }
                 }
                 Item::Overlap(overlap) => {
-                    self.gen_decode_overlap(out, pad, overlap, *item.mask(), item_size)?;
+                    let scope = scope.child(*item.mask(), item_size);
+                    self.gen_decode_overlap(out, pad, overlap, scope)?;
                 }
                 Item::Group(group) => {
-                    self.gen_decode_group(out, pad, group, *item.mask(), item_size)?;
+                    let scope = scope.child(*item.mask(), item_size);
+                    self.gen_decode_group(out, pad, group, scope)?;
                 }
             }
 
@@ -881,7 +1137,7 @@ where
         }
         writeln!(out, ") -> {ret_type} {{")?;
         pad.right();
-        self.gen_decode_group(out, pad, &self.tree.root, T::zero(), 0)?;
+        self.gen_decode_group(out, pad, &self.tree.root, Scope::new(self))?;
         writeln!(out)?;
         writeln!(out, "{pad}{ret_fail}")?;
         pad.left();

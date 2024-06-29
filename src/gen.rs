@@ -877,11 +877,15 @@ where
                 ValueKind::Set(set) => {
                     self.gen_extract_set(out, pad, scope, name, set.as_slice())?;
                 }
-                ValueKind::Field(f) => {
-                    write!(out, "{pad}let {name} ")?;
-                    self.gen_extract_field(out, scope, None, '=', f)?;
-                    writeln!(out, ";")?;
-                }
+                ValueKind::Field(f) => match f {
+                    Field::FieldRef(def)
+                        if scope.is_preloaded_field(def.name()) && name == def.name() => {}
+                    _ => {
+                        write!(out, "{pad}let {name} ")?;
+                        self.gen_extract_field(out, scope, None, '=', f)?;
+                        writeln!(out, ";")?;
+                    }
+                },
                 ValueKind::Const(v) => {
                     writeln!(out, "{pad}let {name} = {v};")?;
                 }

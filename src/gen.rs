@@ -397,6 +397,7 @@ struct Scope<T, S> {
     mask: T,
     // The instruction size checked in a parent scope.
     size: u32,
+    variable_size: bool,
 
     preload_field_max: u32,
     preload_field_usage: f64,
@@ -412,6 +413,7 @@ where
         Self {
             mask: T::zero(),
             size: 0,
+            variable_size: generator.variable_size,
             preload_field_max: generator.preload_field_max,
             preload_field_usage: generator.preload_field_usage,
             preloaded_fields: Default::default(),
@@ -422,6 +424,7 @@ where
         Self {
             mask,
             size,
+            variable_size: self.variable_size,
             preload_field_max: self.preload_field_max,
             preload_field_usage: self.preload_field_usage,
             preloaded_fields: self.preloaded_fields.clone(),
@@ -456,11 +459,17 @@ where
                 break;
             }
             let name = field.name();
+            if self.variable_size && self.size < field.required_size() {
+                // required instruction size is not checked yet
+                continue;
+            }
             if self.is_preloaded_field(name) {
+                // already preloaded
                 continue;
             }
             n += 1;
             if n > self.preload_field_max {
+                // no more preloads
                 break;
             }
             writeln!(out, "{pad}// {count:} uses in {usage:.1}% patterns")?;

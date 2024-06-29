@@ -13,7 +13,7 @@ mod parser;
 #[cfg(feature = "gen")]
 pub mod gen;
 
-use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::Rc};
+use std::{cmp, collections::HashMap, fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::Rc};
 
 use crate::parser::Span;
 
@@ -133,6 +133,10 @@ impl UnnamedField {
     pub fn sxt(&self) -> bool {
         self.sxt
     }
+
+    fn required_size(&self) -> u32 {
+        self.pos + self.len
+    }
 }
 
 /// A reference to a field definition.
@@ -211,6 +215,18 @@ impl<S> FieldDef<S> {
     /// Returns an iterator over all subfields for this field.
     pub fn iter(&self) -> impl Iterator<Item = &FieldItem<S>> {
         self.items.iter()
+    }
+
+    fn required_size(&self) -> u32 {
+        let mut max = 0;
+        for item in &self.items {
+            let size = match item {
+                FieldItem::Field(field) => field.required_size(),
+                FieldItem::FieldRef(field_ref) => field_ref.field.required_size(),
+            };
+            max = cmp::max(max, size);
+        }
+        max
     }
 }
 

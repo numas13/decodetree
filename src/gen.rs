@@ -534,15 +534,15 @@ where
         pad: Pad,
         pattern: &'a Pattern<T, S>,
     ) -> io::Result<()> {
+        for i in &pattern.cond {
+            self.conditions.insert(&i.name);
+        }
+
         if self.opcodes.contains(&*pattern.name) {
             return Ok(());
         }
 
         self.opcodes.insert(&pattern.name);
-
-        for i in &pattern.cond {
-            self.conditions.insert(&i.name);
-        }
 
         if !self.gen.trans_proto_check(pattern.name()) {
             return Ok(());

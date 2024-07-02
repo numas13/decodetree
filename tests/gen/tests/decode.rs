@@ -9,6 +9,10 @@ struct Insn {
 }
 
 impl generated::Decode for Insn {
+    type Error = ();
+
+    fn fail(&self) -> Self::Error {}
+
     fn cond_alias(&self) -> bool {
         true
     }
@@ -19,6 +23,10 @@ impl generated::Decode for Insn {
 }
 
 impl generated_opt::Decode for Insn {
+    type Error = ();
+
+    fn fail(&self) -> Self::Error {}
+
     fn cond_alias(&self) -> bool {
         true
     }
@@ -51,7 +59,7 @@ fn decode() {
     for (raw, expected) in TEST.iter().copied() {
         println!("{raw:08x} {expected:?}");
         let mut insn = Insn::default();
-        insn.decode(raw);
+        insn.decode(raw).ok();
         assert_eq!(insn.opcode, expected);
     }
 }
@@ -63,7 +71,7 @@ fn decode_opt() {
     for (raw, expected) in TEST.iter().copied() {
         println!("{raw:08x} {expected:?}");
         let mut insn = Insn::default();
-        insn.decode(raw);
+        insn.decode(raw).ok();
         assert_eq!(insn.opcode, expected);
     }
 }

@@ -564,7 +564,7 @@ where
                 _ => write!(out, "{}", self.value_type)?,
             }
         }
-        write!(out, ") -> bool")?;
+        write!(out, ") -> Result<bool, Self::Error>")?;
 
         if self.gen.trans_body(out, pad, pattern)? {
             writeln!(out)?;
@@ -932,17 +932,13 @@ where
                     write!(out, ", {}", arg.name())?;
                 }
             }
-            writeln!(out, ") {{")?;
+            writeln!(out, ")? {{")?;
             pad.right();
         }
 
         self.gen.trans_success(out, pad, pattern)?;
 
-        if self.variable_size {
-            writeln!(out, "{pad}return {};", pattern.size())?;
-        } else {
-            writeln!(out, "{pad}return true;")?;
-        }
+        writeln!(out, "{pad}return Ok({});", pattern.size())?;
 
         if gen_call {
             pad.left();
@@ -1033,7 +1029,7 @@ where
     ) -> io::Result<u32> {
         if self.variable_size && old_size < size {
             writeln!(out, "{pad}if insn_size < {size} {{")?;
-            writeln!(out, "{}return -{size};", pad.shift())?;
+            writeln!(out, "{}return Err(self.need_more({size}));", pad.shift())?;
             writeln!(out, "{pad}}}")?;
             Ok(size)
         } else {
@@ -1085,7 +1081,7 @@ where
                 if let Some(size) = item_sizes.remove(&opcode) {
                     if item_size < size {
                         write!(out, "{pad}{opcode:#x} if insn_size < {size} => ")?;
-                        writeln!(out, "return -{size},")?;
+                        writeln!(out, "return Err(self.need_more({size})),")?;
                         item_size = size;
                     }
                 }
@@ -1139,20 +1135,17 @@ where
     fn gen_decode<W: Write>(&mut self, out: &mut W, mut pad: Pad) -> io::Result<()> {
         self.gen_comment(out, pad, "Decode function")?;
         write!(out, "{pad}fn decode(&mut self, insn: {}", self.insn_type)?;
-        let (ret_type, ret_fail) = if self.variable_size {
-            write!(out, ", insn_size: u32")?;
-            ("i32", "0")
-        } else {
-            ("bool", "false")
-        };
+        if self.variable_size {
+            write!(out, ", insn_size: usize")?;
+        }
         for (name, ty) in self.gen.decode_args() {
             write!(out, ", {name}: {ty}")?;
         }
-        writeln!(out, ") -> {ret_type} {{")?;
+        writeln!(out, ") -> Result<usize, Self::Error> {{")?;
         pad.right();
         self.gen_decode_group(out, pad, &self.tree.root, Scope::new(self))?;
         writeln!(out)?;
-        writeln!(out, "{pad}{ret_fail}")?;
+        writeln!(out, "{pad}Err(self.fail())")?;
         pad.left();
         writeln!(out, "{pad}}}")
     }
@@ -1172,6 +1165,12 @@ where
         }
         writeln!(out, " {{")?;
         pad.right();
+        writeln!(out, "{pad}type Error;")?;
+        writeln!(out)?;
+        if self.variable_size {
+            writeln!(out, "{pad}fn need_more(&self, size: usize) -> Self::Error;")?;
+        }
+        writeln!(out, "{pad}fn fail(&self) -> Self::Error;")?;
         self.gen_extern_func_proto(out, pad)?;
         self.gen_extract_fields(out, pad)?;
         if !self.tree.root.as_slice().len() != 0 {

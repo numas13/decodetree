@@ -30,7 +30,7 @@ impl<T> Gen<T, &'_ str> for Helper {
         writeln!(out, "{{")?;
         pad.right();
         writeln!(out, "{pad}self.set_opcode(Opcode::{opcode});")?;
-        writeln!(out, "{pad}true")?;
+        writeln!(out, "{pad}Ok(true)")?;
         pad.left();
         writeln!(out, "{pad}}}")?;
         Ok(true)

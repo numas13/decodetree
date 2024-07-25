@@ -273,6 +273,7 @@ pub struct GeneratorBuilder {
     stubs: bool,
     variable_size: bool,
     args_by_ref: bool,
+    preload_field_check_size: bool,
     preload_field_max: u32,
     preload_field_usage: f64,
 }
@@ -288,6 +289,7 @@ impl Default for GeneratorBuilder {
             stubs: false,
             variable_size: false,
             args_by_ref: false,
+            preload_field_check_size: false,
             preload_field_max: 5,
             preload_field_usage: 33.0,
         }
@@ -343,6 +345,12 @@ impl GeneratorBuilder {
         self
     }
 
+    /// Do not preload fields if required instruction size is not checked.
+    pub fn preload_field_check_size(mut self, check_size: bool) -> Self {
+        self.preload_field_check_size = check_size;
+        self
+    }
+
     /// Set how many fields can be preloaded at once.
     ///
     /// Set `0` to disable fields preloading.
@@ -381,6 +389,7 @@ impl GeneratorBuilder {
             stubs: self.stubs,
             variable_size: self.variable_size,
             args_by_ref: self.args_by_ref,
+            preload_field_check_size: self.preload_field_check_size,
             preload_field_max: self.preload_field_max,
             preload_field_usage: self.preload_field_usage,
             gen,
@@ -397,8 +406,8 @@ struct Scope<T, S> {
     mask: T,
     // The instruction size checked in a parent scope.
     size: u32,
-    variable_size: bool,
 
+    preload_field_check_size: bool,
     preload_field_max: u32,
     preload_field_usage: f64,
     preloaded_fields: HashMap<S, Rc<FieldDef<S>>>,
@@ -413,7 +422,7 @@ where
         Self {
             mask: T::zero(),
             size: 0,
-            variable_size: generator.variable_size,
+            preload_field_check_size: generator.preload_field_check_size,
             preload_field_max: generator.preload_field_max,
             preload_field_usage: generator.preload_field_usage,
             preloaded_fields: Default::default(),
@@ -424,7 +433,7 @@ where
         Self {
             mask,
             size,
-            variable_size: self.variable_size,
+            preload_field_check_size: self.preload_field_check_size,
             preload_field_max: self.preload_field_max,
             preload_field_usage: self.preload_field_usage,
             preloaded_fields: self.preloaded_fields.clone(),
@@ -459,7 +468,7 @@ where
                 break;
             }
             let name = field.name();
-            if self.variable_size && self.size < field.required_size() {
+            if self.preload_field_check_size && self.size < field.required_size() {
                 // required instruction size is not checked yet
                 continue;
             }
@@ -501,6 +510,7 @@ pub struct Generator<'a, T = super::DefaultInsn, S = Str, G = ()> {
     args_by_ref: bool,
     preload_field_max: u32,
     preload_field_usage: f64,
+    preload_field_check_size: bool,
     gen: G,
     tree: &'a DecodeTree<T, S>,
     opcodes: HashSet<&'a str>,

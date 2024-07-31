@@ -132,7 +132,7 @@ where
 }
 
 /// Helper to align generated code.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct Pad(usize);
 
 impl Pad {

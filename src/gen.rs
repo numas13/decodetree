@@ -272,6 +272,7 @@ pub struct GeneratorBuilder {
     sextract: Str,
     stubs: bool,
     variable_size: bool,
+    error_type: bool,
     args_by_ref: bool,
     preload_field_check_size: bool,
     preload_field_max: u32,
@@ -288,6 +289,7 @@ impl Default for GeneratorBuilder {
             sextract: Str::from("sextract"),
             stubs: false,
             variable_size: false,
+            error_type: true,
             args_by_ref: false,
             preload_field_check_size: false,
             preload_field_max: 5,
@@ -330,6 +332,12 @@ impl GeneratorBuilder {
     /// Generate default functions implementations.
     pub fn stubs(mut self, stubs: bool) -> Self {
         self.stubs = stubs;
+        self
+    }
+
+    /// Generate `type Error` in Decode trait.
+    pub fn error_type(mut self, error_type: bool) -> Self {
+        self.error_type = error_type;
         self
     }
 
@@ -388,6 +396,7 @@ impl GeneratorBuilder {
             sextract: self.sextract,
             stubs: self.stubs,
             variable_size: self.variable_size,
+            error_type: self.error_type,
             args_by_ref: self.args_by_ref,
             preload_field_check_size: self.preload_field_check_size,
             preload_field_max: self.preload_field_max,
@@ -507,6 +516,7 @@ pub struct Generator<'a, T = super::DefaultInsn, S = Str, G = ()> {
     sextract: Str,
     stubs: bool,
     variable_size: bool,
+    error_type: bool,
     args_by_ref: bool,
     preload_field_max: u32,
     preload_field_usage: f64,
@@ -1175,8 +1185,10 @@ where
         }
         writeln!(out, " {{")?;
         pad.right();
-        writeln!(out, "{pad}type Error;")?;
-        writeln!(out)?;
+        if self.error_type {
+            writeln!(out, "{pad}type Error;")?;
+            writeln!(out)?;
+        }
         if self.variable_size {
             writeln!(out, "{pad}fn need_more(&self, size: usize) -> Self::Error;")?;
         }

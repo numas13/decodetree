@@ -782,10 +782,14 @@ where
                     FieldItem::FieldRef(f) => {
                         let (field, len) = (f.field(), f.len());
                         writeln!(out, "{pad}out <<= {};", len)?;
-                        let s = ["", "s"][f.sxt() as usize];
+                        let func = if f.sxt() {
+                            &self.sextract
+                        } else {
+                            &self.zextract
+                        };
                         let name = field.name();
                         writeln!(out, "{pad}let tmp0 = Self::extract_{name}(insn);")?;
-                        writeln!(out, "{pad}out |= {s}extract(tmp0, 0, {len}) as {ty};")?;
+                        writeln!(out, "{pad}out |= {func}(tmp0, 0, {len}) as {ty};")?;
                     }
                 }
             }

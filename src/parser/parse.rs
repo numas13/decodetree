@@ -221,8 +221,9 @@ fn args_name(s: Span) -> IResult {
     preceded_name('&')(s)
 }
 
-fn args_ref(s: Span) -> IResult {
-    args_name(s)
+fn args_ref(s: Span) -> IResult<(Span, Span)> {
+    let p = pair(opt(terminated(identifier, char('='))), args_name);
+    map(p, |(name, field)| (name.unwrap_or(field), field))(s)
 }
 
 fn format_name(s: Span) -> IResult {
@@ -436,7 +437,7 @@ fn format_item(s: Span) -> IResult<FormatItem> {
         map(fixedbits, FormatItem::FixedBits),
         map(format_field, FormatItem::FixedField),
         map(field_ref, FormatItem::FieldRef),
-        map(args_ref, FormatItem::ArgsRef),
+        map(args_ref, |(n, s)| FormatItem::ArgsRef(n, s)),
         map(const_value, FormatItem::Const),
     ));
     map_err(p, |e| {
@@ -477,7 +478,7 @@ fn const_value(s: Span) -> IResult<Const> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PatternItem<'a> {
-    ArgsRef(Span<'a>),
+    ArgsRef(Span<'a>, Span<'a>),
     FormatRef(Span<'a>),
     FixedBits(Span<'a>),
     FixedField(NamedField<'a>),
@@ -496,7 +497,7 @@ impl<'a> PatternItem<'a> {
     }
 
     fn args_ref(name: Span<'a>) -> Self {
-        Self::ArgsRef(name)
+        Self::ArgsRef(name, name)
     }
 
     fn field(name: Span<'a>, len: Number<'a, u32>, sxt: bool) -> Self {
@@ -514,7 +515,7 @@ impl<'a> PatternItem<'a> {
 
 fn pattern_item(s: Span) -> IResult<PatternItem> {
     let p = alt((
-        map(args_ref, PatternItem::ArgsRef),
+        map(args_ref, |(n, s)| PatternItem::ArgsRef(n, s)),
         map(format_ref, PatternItem::FormatRef),
         map(fixedbits, PatternItem::FixedBits),
         map(format_field, PatternItem::FixedField),

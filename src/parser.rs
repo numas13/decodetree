@@ -207,11 +207,11 @@ where
         for i in def.items.iter() {
             match i {
                 E::FixedBits(..) | E::FixedField(..) => {}
-                E::ArgsRef(i) => {
-                    if let Some(r) = self.args.get(i.fragment()) {
-                        pat.push_args(Value::new_set(*i, r.items.clone()));
+                E::ArgsRef(name, set) => {
+                    if let Some(r) = self.args.get(name.fragment()) {
+                        pat.push_args(Value::new_set(*name, r.items.clone()));
                     } else {
-                        self.errors.undefined(*i, Token::Args);
+                        self.errors.undefined(*set, Token::Args);
                     }
                 }
                 E::FieldRef(i) => {

@@ -94,7 +94,7 @@ impl Dump {
         use decodetree::ValueKind as E;
         let name = value.name();
         match value.kind() {
-            E::Set(set) => {
+            E::Set(_, set) => {
                 print!("&{name}");
                 for arg in set {
                     print!(" ");

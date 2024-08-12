@@ -332,7 +332,7 @@ pub enum ValueKind<S = Str> {
     /// A field value.
     Field(Field<S>),
     /// A set of values.
-    Set(Vec<SetValue<S>>),
+    Set(S, Vec<SetValue<S>>),
 }
 
 /// A value for instruction pattern.
@@ -362,10 +362,10 @@ impl<S> Value<S> {
         }
     }
 
-    fn new_set(name: S, args: Vec<SetValue<S>>) -> Self {
+    fn new_set(name: S, set: S, args: Vec<SetValue<S>>) -> Self {
         Self {
             name,
-            kind: ValueKind::Set(args),
+            kind: ValueKind::Set(set, args),
         }
     }
 
@@ -489,7 +489,7 @@ impl<'a, I> Pattern<I, Span<'a>> {
             ValueKind::Field(..) | ValueKind::Const(..) => {
                 // fill empty slot
                 for arg in self.args.iter_mut().rev() {
-                    if let ValueKind::Set(args) = &mut arg.kind {
+                    if let ValueKind::Set(_, args) = &mut arg.kind {
                         if let Some(item) = args.iter_mut().find(|i| {
                             i.kind.is_none() && i.name.fragment() == value.name.fragment()
                         }) {
@@ -501,7 +501,7 @@ impl<'a, I> Pattern<I, Span<'a>> {
 
                 // override slot in last set
                 for arg in self.args.iter_mut().rev() {
-                    if let ValueKind::Set(args) = &mut arg.kind {
+                    if let ValueKind::Set(_, args) = &mut arg.kind {
                         if let Some(item) = args
                             .iter_mut()
                             .find(|i| i.name.fragment() == value.name.fragment())
@@ -849,7 +849,7 @@ impl<I: Insn, S> DecodeTree<I, S> {
 ///     assert_eq!(args[0].name(), &"r");
 ///
 ///     let set = match args[0].kind() {
-///         ValueKind::Set(set) => set,
+///         ValueKind::Set("r", set) => set,
 ///         _ => panic!(),
 ///     };
 ///     assert_eq!(set[0].name(), &"rd");

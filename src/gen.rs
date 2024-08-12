@@ -81,7 +81,7 @@ where
     fn field_usage(&self, output: &mut FieldUsageInfo<S>) -> usize {
         for i in &self.args {
             match i.kind() {
-                ValueKind::Set(values) => {
+                ValueKind::Set(_, values) => {
                     for i in values {
                         if let SetValueKind::Field(field) = i.kind() {
                             field.field_usage(output);
@@ -580,7 +580,7 @@ where
             let name = value.name();
             write!(out, ", {name}: ")?;
             match value.kind() {
-                ValueKind::Set(..) => write!(out, "args_{name}")?,
+                ValueKind::Set(set, _) => write!(out, "args_{set}")?,
                 _ => write!(out, "{}", self.value_type)?,
             }
         }
@@ -863,9 +863,10 @@ where
         pad: Pad,
         scope: &Scope<T, S>,
         name: &str,
+        set: &str,
         items: &[SetValue<S>],
     ) -> io::Result<()> {
-        writeln!(out, "{pad}let {name} = args_{name} {{")?;
+        writeln!(out, "{pad}let {name} = args_{set} {{")?;
         let p = pad.shift();
         for arg in items {
             write!(out, "{p}{}", arg.name())?;
@@ -898,8 +899,8 @@ where
         {
             let name = arg.name();
             match arg.kind() {
-                ValueKind::Set(set) => {
-                    self.gen_extract_set(out, pad, scope, name, set.as_slice())?;
+                ValueKind::Set(set, values) => {
+                    self.gen_extract_set(out, pad, scope, name, set, values.as_slice())?;
                 }
                 ValueKind::Field(f) => match f {
                     Field::FieldRef(def)

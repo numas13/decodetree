@@ -208,8 +208,8 @@ where
             match i {
                 E::FixedBits(..) | E::FixedField(..) => {}
                 E::ArgsRef(name, set) => {
-                    if let Some(r) = self.args.get(name.fragment()) {
-                        pat.push_args(Value::new_set(*name, r.items.clone()));
+                    if let Some(r) = self.args.get(set.fragment()) {
+                        pat.push_args(Value::new_set(*name, *set, r.items.clone()));
                     } else {
                         self.errors.undefined(*set, Token::Args);
                     }
@@ -273,7 +273,7 @@ where
 
         if !is_format {
             for arg in &pat.args {
-                if let ValueKind::Set(args) = &arg.kind {
+                if let ValueKind::Set(_, args) = &arg.kind {
                     for i in args.iter().filter(|i| i.kind.is_none()) {
                         self.errors
                             .push(arg.name, ErrorKind::UndefinedMember(def.name, i.name));
@@ -476,9 +476,10 @@ where
 
     fn convert_value_kind(&self, kind: &ValueKind<'src>) -> ValueKind<S> {
         match kind {
-            ValueKind::Set(args) => {
-                ValueKind::Set(args.iter().map(|i| self.convert_arg(i)).collect())
-            }
+            ValueKind::Set(set, args) => ValueKind::Set(
+                S::from(set),
+                args.iter().map(|i| self.convert_arg(i)).collect(),
+            ),
             ValueKind::Field(field) => ValueKind::Field(self.convert_field(field)),
             ValueKind::Const(value) => ValueKind::Const(*value),
         }

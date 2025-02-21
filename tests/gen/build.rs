@@ -6,7 +6,7 @@ use std::{
 };
 
 use decodetree::{
-    gen::{Gen, Pad},
+    generator::{Gen, Pad},
     Parser, Pattern,
 };
 

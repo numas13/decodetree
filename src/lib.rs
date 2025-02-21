@@ -11,7 +11,11 @@ mod error;
 mod parser;
 
 #[cfg(feature = "gen")]
-pub mod gen;
+pub mod generator;
+
+#[cfg(feature = "gen")]
+#[deprecated(since = "0.4.8", note = "use generator module")]
+pub use generator as r#gen;
 
 use std::{collections::HashMap, fmt::LowerHex, hash::Hash, mem, ops::Deref, rc::Rc};
 
@@ -21,7 +25,7 @@ pub use crate::error::Errors;
 pub use crate::parser::Parser;
 
 #[cfg(feature = "gen")]
-pub use crate::gen::Generator;
+pub use crate::generator::Generator;
 
 type DefaultInsn = u32;
 

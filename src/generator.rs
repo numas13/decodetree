@@ -165,9 +165,12 @@ impl fmt::Display for Pad {
     }
 }
 
+#[deprecated(since = "0.4.8", note = "use trait Hooks instead")]
+pub use Hooks as Gen;
+
 /// Hooks to generate custom code.
 #[allow(unused_variables)]
-pub trait Gen<T, S = Str> {
+pub trait Hooks<T, S = Str> {
     /// Additional attributes for argument sets.
     fn sets_attrs(&self) -> &[&str] {
         &[]
@@ -261,7 +264,7 @@ pub trait Gen<T, S = Str> {
     }
 }
 
-impl<T> Gen<T> for () {}
+impl<T> Hooks<T> for () {}
 
 /// Generator builder.
 pub struct GeneratorBuilder {
@@ -376,10 +379,10 @@ impl GeneratorBuilder {
     }
 
     /// Build the `Generator`.
-    pub fn build<T, S, G>(self, tree: &DecodeTree<T, S>, gen: G) -> Generator<T, S, G>
+    pub fn build<T, S, G>(self, tree: &DecodeTree<T, S>, hooks: G) -> Generator<T, S, G>
     where
         T: Insn,
-        G: Gen<T, S>,
+        G: Hooks<T, S>,
     {
         let insn_type = self
             .insn_type
@@ -401,7 +404,7 @@ impl GeneratorBuilder {
             preload_field_check_size: self.preload_field_check_size,
             preload_field_max: self.preload_field_max,
             preload_field_usage: self.preload_field_usage,
-            gen,
+            hooks,
             tree,
             opcodes: Default::default(),
             conditions: Default::default(),
@@ -521,7 +524,7 @@ pub struct Generator<'a, T = super::DefaultInsn, S = Str, G = ()> {
     preload_field_max: u32,
     preload_field_usage: f64,
     preload_field_check_size: bool,
-    gen: G,
+    hooks: G,
     tree: &'a DecodeTree<T, S>,
     opcodes: HashSet<&'a str>,
     conditions: HashSet<&'a str>,
@@ -538,7 +541,7 @@ impl<'a, T, S: 'a, G> Generator<'a, T, S, G>
 where
     T: Insn,
     S: Clone + Eq + Hash + fmt::Display + Deref<Target = str>,
-    G: Gen<T, S>,
+    G: Hooks<T, S>,
 {
     fn gen_comment<W: Write>(&self, out: &mut W, pad: Pad, msg: &str) -> io::Result<()> {
         let width = 60;
@@ -564,19 +567,18 @@ where
 
         self.opcodes.insert(&pattern.name);
 
-        if !self.gen.trans_proto_check(pattern.name()) {
+        if !self.hooks.trans_proto_check(pattern.name()) {
             return Ok(());
         }
 
         write!(out, "{pad}fn trans_{}(&mut self", pattern.name())?;
-        for (name, ty) in self.gen.trans_args(pattern.name()) {
+        for (name, ty) in self.hooks.trans_args(pattern.name()) {
             write!(out, ", {name}: {ty}")?;
         }
-        for value in pattern
-            .args
-            .iter()
-            .filter(|i| self.gen.trans_check_arg(pattern.name(), i.name().as_ref()))
-        {
+        for value in pattern.args.iter().filter(|i| {
+            self.hooks
+                .trans_check_arg(pattern.name(), i.name().as_ref())
+        }) {
             let name = value.name();
             write!(out, ", {name}: ")?;
             match value.kind() {
@@ -586,7 +588,7 @@ where
         }
         write!(out, ") -> Result<bool, Self::Error>")?;
 
-        if self.gen.trans_body(out, pad, pattern)? {
+        if self.hooks.trans_body(out, pad, pattern)? {
             writeln!(out)?;
             return Ok(());
         }
@@ -663,11 +665,11 @@ where
 
         self.gen_comment(out, pad, "Conditions")?;
         for i in &list {
-            for attr in self.gen.cond_attrs(i) {
+            for attr in self.hooks.cond_attrs(i) {
                 writeln!(out, "{attr}")?;
             }
             write!(out, "{pad}fn cond_{i}(&self")?;
-            for (arg, ty) in self.gen.cond_args(i) {
+            for (arg, ty) in self.hooks.cond_args(i) {
                 write!(out, ", {arg}: {ty}")?;
             }
             writeln!(out, ") -> bool;")?;
@@ -678,7 +680,7 @@ where
     fn gen_args<W: Write>(&self, out: &mut W, pad: Pad) -> io::Result<()> {
         self.gen_comment(out, pad, "Argument sets")?;
         for args in self.tree.sets.iter().filter(|i| !i.is_extern) {
-            for attr in self.gen.sets_attrs() {
+            for attr in self.hooks.sets_attrs() {
                 writeln!(out, "{attr}")?;
             }
             writeln!(out, "{pad}#[allow(non_camel_case_types)]")?;
@@ -895,7 +897,7 @@ where
         for arg in pattern
             .args
             .iter()
-            .filter(|i| self.gen.trans_check_arg(pattern.name(), i.name()))
+            .filter(|i| self.hooks.trans_check_arg(pattern.name(), i.name()))
         {
             let name = arg.name();
             match arg.kind() {
@@ -940,16 +942,16 @@ where
     ) -> io::Result<()> {
         self.gen_extract_args(out, pattern, pad, scope)?;
 
-        let gen_call = self.gen.trans_call_check(pattern.name());
+        let gen_call = self.hooks.trans_call_check(pattern.name());
         if gen_call {
             write!(out, "{pad}if Self::trans_{}(self", pattern.name)?;
-            for (name, _) in self.gen.trans_args(pattern.name()) {
+            for (name, _) in self.hooks.trans_args(pattern.name()) {
                 write!(out, ", {name}")?;
             }
             for arg in pattern
                 .args
                 .iter()
-                .filter(|i| self.gen.trans_check_arg(pattern.name(), i.name()))
+                .filter(|i| self.hooks.trans_check_arg(pattern.name(), i.name()))
             {
                 if self.args_by_ref && arg.is_set() {
                     write!(out, ", &{}", arg.name())?;
@@ -961,7 +963,7 @@ where
             pad.right();
         }
 
-        self.gen.trans_success(out, pad, pattern)?;
+        self.hooks.trans_success(out, pad, pattern)?;
 
         writeln!(out, "{pad}return Ok({});", pattern.size())?;
 
@@ -984,7 +986,7 @@ where
             }
             let inv = if cond.invert { "!" } else { "" };
             write!(out, "{inv}self.cond_{}(", cond.name())?;
-            for (i, (arg, _)) in self.gen.cond_args(cond.name()).iter().enumerate() {
+            for (i, (arg, _)) in self.hooks.cond_args(cond.name()).iter().enumerate() {
                 if i != 0 {
                     write!(out, ", ")?;
                 }
@@ -1163,7 +1165,7 @@ where
         if self.variable_size {
             write!(out, ", insn_size: usize")?;
         }
-        for (name, ty) in self.gen.decode_args() {
+        for (name, ty) in self.hooks.decode_args() {
             write!(out, ", {name}: {ty}")?;
         }
         writeln!(out, ") -> Result<usize, Self::Error> {{")?;
@@ -1176,7 +1178,7 @@ where
     }
 
     fn gen_trait<W: Write>(&mut self, out: &mut W, mut pad: Pad) -> io::Result<()> {
-        for attr in self.gen.trait_attrs() {
+        for attr in self.hooks.trait_attrs() {
             writeln!(out, "{pad}{attr}")?;
         }
         if self.stubs {
@@ -1185,7 +1187,7 @@ where
         writeln!(out, "#[allow(clippy::unnecessary_cast)]")?;
         writeln!(out, "#[allow(clippy::collapsible_if)]")?;
         write!(out, "{pad}pub trait {}: Sized", self.trait_name)?;
-        for parent in self.gen.trait_parents() {
+        for parent in self.hooks.trait_parents() {
             write!(out, " + {parent}")?;
         }
         writeln!(out, " {{")?;
@@ -1208,7 +1210,7 @@ where
             writeln!(out)?;
         }
         self.gen_comment(out, pad, "Generated user code for trait")?;
-        self.gen.trait_body(out, pad)?;
+        self.hooks.trait_body(out, pad)?;
         pad.left();
         writeln!(out, "{pad}}}")
     }
@@ -1221,6 +1223,6 @@ where
         self.gen_trait(out, pad)?;
         writeln!(out)?;
         self.gen_comment(out, pad, "Generated user code")?;
-        self.gen.end(out, pad, &self.opcodes)
+        self.hooks.end(out, pad, &self.opcodes)
     }
 }

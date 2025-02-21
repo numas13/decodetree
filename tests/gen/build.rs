@@ -6,7 +6,7 @@ use std::{
 };
 
 use decodetree::{
-    generator::{Gen, Pad},
+    generator::{Hooks, Pad},
     Parser, Pattern,
 };
 
@@ -15,7 +15,7 @@ struct Helper {
     opcodes: bool,
 }
 
-impl<T> Gen<T, &'_ str> for Helper {
+impl<T> Hooks<T, &'_ str> for Helper {
     fn trans_args(&self, _: &str) -> &[(&str, &str)] {
         &[("insn", "u32")]
     }
@@ -91,7 +91,7 @@ impl<'a> Generate<'a> {
         }
     }
 
-    fn gen<T>(&self, out: &str)
+    fn generate<T>(&self, out: &str)
     where
         T: Default + std::hash::Hash + std::fmt::LowerHex + Ord + decodetree::Insn,
     {
@@ -137,18 +137,18 @@ impl<'a> Generate<'a> {
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
 
-    let mut gen = Generate::new("src/insn.decode");
-    gen.gen::<u32>(&format!("{out_dir}/generated.rs"));
-    gen.optimize = true;
-    gen.gen::<u32>(&format!("{out_dir}/generated_opt.rs"));
+    let mut g = Generate::new("src/insn.decode");
+    g.generate::<u32>(&format!("{out_dir}/generated.rs"));
+    g.optimize = true;
+    g.generate::<u32>(&format!("{out_dir}/generated_opt.rs"));
 
-    let mut gen = Generate::new("src/insn_vs.decode");
-    gen.sizes = &[8, 16, 24, 32];
-    gen.variable_size = true;
-    gen.gen::<u32>(&format!("{out_dir}/generated_vs.rs"));
-    gen.optimize = true;
-    gen.gen::<u32>(&format!("{out_dir}/generated_vs_opt.rs"));
+    let mut g = Generate::new("src/insn_vs.decode");
+    g.sizes = &[8, 16, 24, 32];
+    g.variable_size = true;
+    g.generate::<u32>(&format!("{out_dir}/generated_vs.rs"));
+    g.optimize = true;
+    g.generate::<u32>(&format!("{out_dir}/generated_vs_opt.rs"));
 
-    let gen = Generate::new("src/extract.decode");
-    gen.gen::<u32>(&format!("{out_dir}/generated_extract.rs"));
+    let g = Generate::new("src/extract.decode");
+    g.generate::<u32>(&format!("{out_dir}/generated_extract.rs"));
 }

@@ -170,8 +170,8 @@ pub struct Number<'a, T> {
     pub span: Span<'a>,
 }
 
+#[cfg(test)]
 impl<'a, T> Number<'a, T> {
-    #[cfg(test)]
     fn new(value: T, span: Span<'a>) -> Self {
         Self { value, span }
     }
@@ -253,7 +253,7 @@ pub struct UnnamedField<'a> {
     pub sxt: bool,
 }
 
-impl<'a> UnnamedField<'a> {
+impl UnnamedField<'_> {
     pub fn pos(&self) -> u32 {
         self.pos.value
     }
@@ -463,7 +463,7 @@ pub struct Const<'a> {
     pub num: Number<'a, i64>,
 }
 
-impl<'a> Const<'a> {
+impl Const<'_> {
     pub fn value(&self) -> i64 {
         self.num.value
     }

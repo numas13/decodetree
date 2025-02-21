@@ -856,7 +856,7 @@ impl<I: Insn, S> DecodeTree<I, S> {
 ///     assert_eq!(set[1].name(), &"rs");
 /// }
 /// ```
-pub fn from_str<'src, I, S>(src: &'src str) -> Result<DecodeTree<I, S>, Errors>
+pub fn from_str<'src, I, S>(src: &'src str) -> Result<DecodeTree<I, S>, Errors<'src>>
 where
     I: Insn,
     S: Ord + From<&'src str>,
